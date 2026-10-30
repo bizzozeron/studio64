@@ -3,7 +3,7 @@
  "files": {
   "Makefile": {
    "orig": "613da2ca74939e6525d71b7edc17c3c8a69d24a852b0eaee2104d044b3afbf6f",
-   "sha256": "f3e8632531abd712d628a8ba20f000777f8935794a64f0981d832982a4d5ee5a",
+   "sha256": "f0e65a23b56b9cad4476510b61954827f38fd2c66820f5a24da7099b530e81d1",
    "hunks": [
     [
      138,
@@ -61,7 +61,9 @@
      909,
      1,
      [
-      "\t$(V)$(LD) -L $(BUILD_DIR) -T undefined_syms.txt -T $(BUILD_DIR)/$(LD_SCRIPT) -Map $(BUILD_DIR)/sm64.$(VERSION).map --no-check-sections --emit-relocs $(addprefix -R ,$(SEG_FILES)) -o $@ $(O_FILES) -lultra -lgoddard -lgcc"
+      "# Studio 64: the libraries by path: with -L/-l, ld on Windows calls them \"build/us\\libultra.a\", which the",
+      "# linker script's \"build/us/libultra.a:*.o\" patterns do not match (their code went to /DISCARD/)",
+      "\t$(V)$(LD) -L $(BUILD_DIR) -T undefined_syms.txt -T $(BUILD_DIR)/$(LD_SCRIPT) -Map $(BUILD_DIR)/sm64.$(VERSION).map --no-check-sections --emit-relocs $(addprefix -R ,$(SEG_FILES)) -o $@ $(O_FILES) $(BUILD_DIR)/libultra.a $(BUILD_DIR)/libgoddard.a $(BUILD_DIR)/libgcc.a"
      ]
     ]
    ]
@@ -522,7 +524,7 @@
   },
   "src/game/camera.c": {
    "orig": "61be2adc8e87e349f28e161de3585ef68c307270d5fd6cd9735fe1fd922a58ef",
-   "sha256": "137ab63863dc9a8a06658d2539b6cf55a518561985fc13e41d7015b75fab16eb",
+   "sha256": "da2e8a0b7619660afb0ad2cc2e297e78763afd0ba3fb0826fd86d2c330b4352c",
    "hunks": [
     [
      405,
@@ -579,6 +581,17 @@
       "        return;",
       "    }",
       ""
+     ]
+    ],
+    [
+     3520,
+     0,
+     [
+      "    {",
+      "        // Studio 64: camera wall collision (src/s64/camcollide.c): the camera zooms in when it strikes a wall",
+      "        extern void studio_camera_collide(f32 *pos, f32 *focus);",
+      "        studio_camera_collide(gc->pos, gc->focus);",
+      "    }"
      ]
     ],
     [
@@ -1412,13 +1425,77 @@
   },
   "tools/Makefile": {
    "orig": "63965bbdd0b4f7ddfdae51c3262298a2edb4d5b6e468bf579a5f667ee864b728",
-   "sha256": "6636b8c2f9b0f20bd097829169a4ed521c34d60ee7721384184e47a862eb8e2a",
+   "sha256": "f2188a30d048518473dcc4e43ac1ab644e26f28d778aed60251743413ff40bca",
    "hunks": [
+    [
+     41,
+     1,
+     [
+      "# Studio 64: override, or the CC= passed on the command line makes the C compiler link this C++ program",
+      "armips: override CC := $(CXX)"
+     ]
+    ],
     [
      43,
      1,
      [
       "armips_CFLAGS  := -std=gnu++17 -include cstdint -fno-exceptions -fno-rtti -pipe"
+     ]
+    ],
+    [
+     48,
+     0,
+     [
+      "# Studio 64: any Windows build (w64devkit's uname is not MINGW*): armips is a wide-character program there",
+      "ifeq ($(OS),Windows_NT)",
+      "  armips_CFLAGS += -DUNICODE -D_UNICODE",
+      "  armips_LDFLAGS += -municode",
+      "endif"
+     ]
+    ]
+   ]
+  },
+  "tools/aiff_extract_codebook.c": {
+   "orig": "bc6c2ce9130b3ab763cc2478e8ce28b7fd8d24312022f6ab73695b22dac073c0",
+   "sha256": "f35edc2fb52d4041f72d3c17d40446fb673d654bda065e7d374427398196faf3",
+   "hunks": [
+    [
+     10,
+     0,
+     [
+      "#ifdef _WIN32",
+      "#include <process.h> // Studio 64: _spawnl (see below)",
+      "#endif"
+     ]
+    ],
+    [
+     170,
+     1,
+     [
+      "#ifdef _WIN32",
+      "        // Studio 64: Windows has no exec: execl starts tabledesign and returns at once, so make read a",
+      "        // half-written .table and vadpcm_enc crashed on it. Wait for tabledesign instead (it writes to our stdout).",
+      "        {",
+      "            intptr_t rc = _spawnl(_P_WAIT, \"./tools/tabledesign.exe\", \"tabledesign\", \"-s\", \"1\", infilename, NULL);",
+      "            exit(rc == 0 ? 0 : 1);",
+      "        }",
+      "#else",
+      "        execl(\"./tools/tabledesign\", \"tabledesign\", \"-s\", \"1\", infilename, NULL);",
+      "#endif"
+     ]
+    ]
+   ]
+  },
+  "tools/audiofile/audiofile.cpp": {
+   "orig": "2d4948899d37056d17c6abb02862a5b02c80b4e1880f6bcc899b2e619a09dac0",
+   "sha256": "adb44a75c114fc23845167443de59fe37a03acf29b0a8993a21a631e7f3482c8",
+   "hunks": [
+    [
+     8245,
+     1,
+     [
+      "// Studio 64: _WIN32 (built with -std=c++11, MinGW defines only that one): read the AIFF files in binary mode",
+      "#if defined(_WIN32) || defined(WIN32) || defined(__CYGWIN__)"
      ]
     ]
    ]

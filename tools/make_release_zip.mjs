@@ -37,7 +37,7 @@ const DEV = [/^tests\/(?!lib\/).+/ /* (tests/lib: the sample makers drive the ga
 // what the top folder may hold (anything else there, like a work folder of a promo video, stays out)
 const TOP_ALLOW = new Set(['Start Studio 64.bat', 'Start Studio 64.command', 'start-studio64.sh', 'GETTING STARTED.txt', 'README.md', 'LICENSE', 'CHANGELOG.md',
   'CONTRIBUTING.md', 'package.json', 'package-lock.json', 'start.sh', 'Dockerfile', 'docker-compose.yml', '.dockerignore',
-  'docs', 'engine', 'engine-upstream', 'server', 'tools', 'web', 'tests']);
+  'docs', 'engine', 'engine-upstream', 'server', 'tools', 'web', 'tests', 'assets']);
 const skippedTop = [];
 // executables in the ZIP (the rest keeps the mode it has here, minus write bits for others)
 const EXEC = new Set(['Start Studio 64.command', 'start-studio64.sh', 'start.sh', 'tools/launch.sh', 'tools/build_engine.sh']);

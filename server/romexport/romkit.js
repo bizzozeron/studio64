@@ -37,8 +37,13 @@ const MIPS = {
 
 // the make variables of a build (also tools/romkit_dev.mjs)
 export function makeVars(mips, env, python) {
-  const cpp = which('cpp', env.PATH) ? [] : [`CPP=${mips.prefix}cpp -U_LANGUAGE_C -ULANGUAGE_C`];
-  return ['VERSION=us', 'COMPILER=gcc', 'GRUCODE=f3dex2', 'COMPARE=0', `CROSS=${mips.prefix}`, ...cpp, ...(python ? [`PYTHON=${python}`] : [])];
+  // (the N64 compiler's preprocessor predefines "mips" as 1, which turned the linker script's
+  // OUTPUT_ARCH (mips) into OUTPUT_ARCH (1): a syntax error. -Umips: the same output as a host cpp's)
+  const cpp = which('cpp', env.PATH) ? [] : [`CPP=${mips.prefix}cpp -U_LANGUAGE_C -ULANGUAGE_C -Umips`];
+  // (Windows: the Makefile's shell is a Unix one, where "D:\\x\\python.exe" loses its backslashes;
+  // forward slashes work for both)
+  const py = python && IS_WIN ? python.replace(/\\/g, '/') : python;
+  return ['VERSION=us', 'COMPILER=gcc', 'GRUCODE=f3dex2', 'COMPARE=0', `CROSS=${mips.prefix}`, ...cpp, ...(py ? [`PYTHON=${py}`] : [])];
 }
 export const pristineDir = () => path.join(KIT_DIR, `pristine-${UPSTREAM.commit.slice(0, 8)}`);
 export async function downloadDecomp(onStatus = () => {}) {
@@ -251,7 +256,9 @@ async function buildKit({ rom, onStatus = () => {}, onProgress = () => {}, onLin
   onStatus('Building the decompilation\'s tools');
   const toolVars = [tc.env.CC ? `CC=${tc.env.CC}` : null, tc.env.CXX ? `CXX=${tc.env.CXX}` : null].filter(Boolean);
   let t = 0;
-  if (await runLines('make', ['-C', 'tools', `-j${jobs}`, ...toolVars], { cwd: tree, env, signal, onLine: (l) => { line(l); t++; onProgress(0.25 + 0.3 * Math.min(1, t / TOOLS_LINES)); } }) !== 0) {
+  // (all-except-recomp: not the recompiled IDO compiler, which only a COMPILER=ido build uses and which
+  // does not build on Windows; the decomp's own Makefile asks for the same with COMPILER=gcc)
+  if (await runLines('make', ['-C', 'tools', `-j${jobs}`, 'all-except-recomp', ...toolVars], { cwd: tree, env, signal, onLine: (l) => { line(l); t++; onProgress(0.25 + 0.3 * Math.min(1, t / TOOLS_LINES)); } }) !== 0) {
     fail('Could not build the decompilation\'s tools', 'Look at the log for the first error.');
   }
   if (!fs.existsSync(path.join(toolsCache, '.studio64-ok'))) {

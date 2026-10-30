@@ -106,6 +106,26 @@ const JOBS = Number(process.env.STUDIO_JOBS) || Math.max(1, Math.min(cores, byMe
 // make by its name (found on PATH, the private one first): the Makefile runs $(MAKE) unquoted, so an
 // absolute path with a space ("Studio 64") would break it
 if (!which('make', env[Object.keys(env).find((k) => k.toUpperCase() === 'PATH')])) fail('make was not found');
+// Windows: the compiler writes the dependency files (build/**/*.d) with backslashes
+// ("build\us_web\bin\bbh_skybox.c"). make's rules use forward slashes, so a listed file that
+// was generated and then removed (the skybox .c files) has "no rule" and every build after the
+// first one fails. Forward slashes there (a backslash at a line end continues the line: kept).
+if (process.platform === 'win32' && fs.existsSync(BUILD)) {
+  let fixed = 0;
+  const walk = (d) => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const f = path.join(d, e.name);
+      if (e.isDirectory()) walk(f);
+      else if (e.name.endsWith('.d')) {
+        const t = fs.readFileSync(f, 'latin1');
+        const u = t.replace(/\\(?=[^\s\\])/g, '/');
+        if (u !== t) { fs.writeFileSync(f, u, 'latin1'); fixed++; }
+      }
+    }
+  };
+  try { walk(BUILD); } catch (err) { say(`(could not fix the dependency files: ${err.message})`); }
+  if (fixed) say(`fixed the paths in ${fixed} dependency file(s)`);
+}
 say(`make TARGET_WEB=1 VERSION=us -j${JOBS}`);
 if (await run('make', ['TARGET_WEB=1', 'VERSION=us', `-j${JOBS}`], { cwd: ENGINE, env }) !== 0) fail('make failed');
 

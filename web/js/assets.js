@@ -111,10 +111,10 @@ export class Assets {
     this.emit(first ? 'load' : 'meta');
   }
 
-  async save(field, value) {
+  async save(field, value, summary = null) {
     this.meta[field] = value;
     this.emit(field);
-    const r = await fetch(this.base(), { method: 'PATCH', headers: this.headers({ 'content-type': 'application/json' }), body: JSON.stringify({ set: { [field]: value } }) });
+    const r = await fetch(this.base(), { method: 'PATCH', headers: this.headers({ 'content-type': 'application/json' }), body: JSON.stringify({ set: { [field]: value }, ...(summary ? { summary } : {}) }) });
     if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'could not save');
   }
 
@@ -213,6 +213,7 @@ export class Assets {
     e.ready = (async () => {
       const pkg = await decodePackage(await this.fileBytes(meta.file));
       e.pkg = pkg;
+      e.pkgFile = meta.file;
       e.info = uploadPackage(this.engine, e.slot, pkg, meta);
       return e.slot;
     })();
@@ -228,7 +229,7 @@ export class Assets {
     if (!meta || !e) return;
     try {
       await e.ready;
-      if (e.pkgFile !== meta.file && e.pkgFile) e.pkg = null;
+      if (e.pkgFile !== meta.file) e.pkg = null; // a new package file (re-import, live reload): read it
       const pkg = e.pkg || await decodePackage(await this.fileBytes(meta.file));
       e.pkg = pkg;
       e.pkgFile = meta.file;
@@ -305,7 +306,8 @@ export class Assets {
   }
 
   // Store a new model: package bytes + its metadata. Returns the model meta.
-  async addModel({ bytes, pkg, name, materials, lighting = 'baked', thumb, source }) {
+  // live: { path, hash } when it came from the live assets folder (livereload.js)
+  async addModel({ bytes, pkg, name, materials, lighting = 'baked', thumb, source, live }) {
     const file = await this.upload(new Blob([bytes]), 'model', name);
     const id = `m${Math.random().toString(36).slice(2, 9)}`;
     const meta = {
@@ -313,15 +315,16 @@ export class Assets {
       texFormat: pkg.texFormat, texMax: pkg.texMax, source, created: Date.now(),
       defaults: { mode: 'prop', collision: true, anim: 'none', speed: 1 },
     };
+    if (live?.path) meta.live = { path: live.path, hash: live.hash || null };
     await this.save('models', [...this.meta.models, meta]);
     return meta;
   }
 
-  async updateModel(id, fields) {
+  async updateModel(id, fields, summary = null) {
     const list = this.meta.models.map((m) => (m.id === id ? { ...m, ...fields } : m));
     const before = this.model(id);
-    await this.save('models', list);
-    if (before && (fields.materials || fields.lighting || fields.file)) this.reloadModel(id);
+    await this.save('models', list, summary);
+    if (before && (fields.materials || fields.lighting || fields.file)) await this.reloadModel(id); // (rebuilt and re-placed when this returns)
   }
 
   async deleteModel(id) {
@@ -506,20 +509,20 @@ export class Assets {
   }
 
   // Replace a game texture (saved in the project). rgba is w*h RGBA8.
-  replaceTexture(t, rgba, w, h, note = '') { return this.replaceTextures([{ t, rgba, w, h, note }]); }
+  replaceTexture(t, rgba, w, h, note = '', live = null, summary = null) { return this.replaceTextures([{ t, rgba, w, h, note, live }], summary); }
 
   // Several at once: one save, one refresh. items: [{ t, rgba, w, h, note }]
-  async replaceTextures(items) {
+  async replaceTextures(items, summary = null) {
     const textures = { ...this.meta.textures };
     const old = [];
-    await Promise.all(items.map(async ({ t, rgba, w, h, note = '' }) => {
+    await Promise.all(items.map(async ({ t, rgba, w, h, note = '', live = null }) => {
       const png = await toPNGBlob(rgba, w, h);
       const file = await this.upload(png, 'png', t.path);
       if (textures[t.path]?.file) old.push(textures[t.path].file);
-      textures[t.path] = { file, w, h, note: String(note).slice(0, 120), at: Date.now() };
+      textures[t.path] = { file, w, h, note: String(note).slice(0, 120), at: Date.now(), ...(live?.path ? { live: { path: live.path, hash: live.hash || null } } : {}) };
       this.files.set(file, png.arrayBuffer().then((b) => new Uint8Array(b))); // no need to load it back
     }));
-    await this.save('textures', textures);
+    await this.save('textures', textures, summary);
     for (const f of old) this.deleteFile(f);
     await this.applyTextures();
   }
@@ -580,7 +583,7 @@ export class Assets {
   }
 
   // Add (or replace) a custom material from w*h RGBA8 pixels. Returns its material index (48..63).
-  async saveMaterial({ slot, name, rgba, w, h, sharp = false }) {
+  async saveMaterial({ slot, name, rgba, w, h, sharp = false, live = null, summary = null }) {
     const list = [...(this.meta.materials || [])];
     if (slot === undefined) {
       const used = new Set(list.map((m) => m.slot));
@@ -590,10 +593,11 @@ export class Assets {
     const file = await this.upload(await toPNGBlob(rgba, w, h), 'png', name);
     const old = list.find((m) => m.slot === slot);
     const entry = { slot, name: plainName(name) || `material ${slot + 1}`, file, w, h, sharp: !!sharp && (w > 32 || h > 32) };
+    if (live?.path) entry.live = { path: live.path, hash: live.hash || null };
     const next = list.filter((m) => m.slot !== slot).concat(entry).sort((a, b) => a.slot - b.slot);
     // two materials with one name would be ambiguous in the editor and for Claude
     if (next.filter((m) => m.name === entry.name).length > 1) entry.name = `${entry.name} ${slot + 1}`;
-    await this.save('materials', next);
+    await this.save('materials', next, summary);
     if (old?.file && old.file !== file) this.deleteFile(old.file);
     this.applyMaterials();
     return 48 + slot;
@@ -754,13 +758,13 @@ export class Assets {
   }
 
   // Set the sky of area `key` ('*' = every level without one of its own) from a panorama canvas/bitmap.
-  async setSky(key, src, { mode = 'panorama', quality = 'n64', horizon = 0, name = 'Sky' } = {}) {
+  async setSky(key, src, { mode = 'panorama', quality = 'n64', horizon = 0, name = 'Sky', live = null, summary = null } = {}) {
     const lay = Assets.skyLayout(src, { mode, quality, horizon });
     const png = await toPNGBlob(lay.rgba, lay.w, lay.h);
     const file = await this.upload(png, 'png', name);
     this.files.set(file, png.arrayBuffer().then((b) => new Uint8Array(b)));
     const old = this.meta.skies?.[key];
-    await this.save('skies', { ...(this.meta.skies || {}), [key]: { file, quality, name: plainName(name), at: Date.now() } });
+    await this.save('skies', { ...(this.meta.skies || {}), [key]: { file, quality, mode, horizon, name: plainName(name), at: Date.now(), ...(live?.path ? { live: { path: live.path, hash: live.hash || null } } : {}) } }, summary);
     if (old?.file && !Object.values(this.meta.skies).some((s) => s.file === old.file)) this.deleteFile(old.file);
     if (this.skyFor(this.key())?.file === file) {
       // show it right away from the pixels we have

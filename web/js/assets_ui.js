@@ -8,6 +8,7 @@ import { buildPackage, encodePackage, decodePackage, defaultMaterialMeta, SURFAC
 import { ModelPreview, thumbnail } from './asset_preview.js';
 import { openPixelEditor } from './pixel_editor.js';
 import { askConfirm, askText, askChoice } from './dialogs.js';
+import { IMAGE_EXTS, MODEL_EXTS, isModelPath, isImagePath } from './livereload.js';
 import { TEX_FORMATS, toCanvas, toDataURL, rasterize, recolor, quantize, pattern, PATTERNS, blobToRGBA, pow2, hex, parseColor } from './texcodec.js';
 
 const $ = (s, root = document) => root.querySelector(s);
@@ -31,13 +32,19 @@ const ICON = {
   search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
   camera: '<path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/>',
   sparkle: '<path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M6 18l2.5-2.5M15.5 8.5 18 6"/>',
+  live: '<path d="M21 12a9 9 0 0 1-15.5 6.3L3 16"/><path d="M3 12a9 9 0 0 1 15.5-6.3L21 8"/><path d="M3 21v-5h5M21 3v5h-5"/>',
+  folder: '<path d="M3 6a1 1 0 0 1 1-1h5l2 2h9a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/>',
+  file: '<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/>',
 };
+const liveOf = (f) => (f?.livePath ? { path: f.livePath, hash: f.liveHash || null } : null);
+const KIND_NAMES = { model: 'Model', texture: 'Game texture', material: 'Material', sky: 'Sky' };
 const fmtSize = (b) => (b > 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`);
 const MARIO_H = 160;
 
 export class AssetsUI {
-  constructor({ assets, engine, editor, editorUI, levelsUI, toast, chat }) {
-    Object.assign(this, { assets, engine, editor, editorUI, levelsUI, toast, chat });
+  constructor({ assets, engine, editor, editorUI, levelsUI, toast, chat, live }) {
+    Object.assign(this, { assets, engine, editor, editorUI, levelsUI, toast, chat, live });
+    this.liveOpen = new Set(['']); // folders shown open in the Live tab
     this.tab = 'models';
     this.tex = { query: '', group: '', here: true, replaced: false, sel: null };
     this.buildDom();
@@ -54,6 +61,10 @@ export class AssetsUI {
       }
       if (this.isOpen()) this.render(what);
     });
+    live?.on((what) => {
+      this.btn?.classList.toggle('live-on', !!live.state.on);
+      if (this.isOpen() && this.tab === 'live' && !this.renderLock) this.render();
+    });
   }
 
   // ---- shell ---------------------------------------------------------------------
@@ -64,6 +75,7 @@ export class AssetsUI {
     btn.id = 'assets-btn';
     btn.title = 'Assets: import 3D models, game textures, materials, sky, Mario colours';
     btn.onclick = () => (this.isOpen() ? this.close() : this.open());
+    this.btn = btn;
     const sound = $('#sound-btn');
     if (sound) sound.parentNode.insertBefore(btn, sound); else $('.topbar')?.appendChild(btn);
 
@@ -71,7 +83,7 @@ export class AssetsUI {
     d.id = 'as-drawer';
     d.hidden = true;
     d.innerHTML = `<div class="as-head"><div class="as-title">${ic(ICON.cube, 'i')}Assets</div>
-      <div class="as-tabs">${[['models', 'Models'], ['textures', 'Textures'], ['materials', 'Materials'], ['sky', 'Sky'], ['mario', 'Mario']].map(([k, l]) => `<button class="as-tab" data-tab="${k}">${l}</button>`).join('')}</div>
+      <div class="as-tabs">${[['models', 'Models'], ['textures', 'Textures'], ['materials', 'Materials'], ['sky', 'Sky'], ['mario', 'Mario'], ...(this.live ? [['live', 'Live']] : [])].map(([k, l]) => `<button class="as-tab" data-tab="${k}">${l}</button>`).join('')}</div>
       <button class="btn icon ghost" data-a="close" title="Close (Esc)">${ic(ICON.close, 'i')}</button></div>
       <div class="as-body"></div>`;
     document.body.appendChild(d);
@@ -102,7 +114,7 @@ export class AssetsUI {
     const body = this.drawer.querySelector('.as-body');
     if (!this.assets.loaded) { body.innerHTML = '<div class="as-empty">Loading…</div>'; return; }
     if (this.renderLock) return;
-    ({ models: () => this.renderModels(body), textures: () => this.renderTextures(body), materials: () => this.renderMaterials(body), sky: () => this.renderSky(body), mario: () => this.renderMario(body) })[this.tab]?.();
+    ({ models: () => this.renderModels(body), textures: () => this.renderTextures(body), materials: () => this.renderMaterials(body), sky: () => this.renderSky(body), mario: () => this.renderMario(body), live: () => this.renderLive(body) })[this.tab]?.();
   }
 
   // Run an async action with a busy state and an error toast.
@@ -114,7 +126,20 @@ export class AssetsUI {
     }
   }
 
-  pickFiles({ accept = '', multiple = true } = {}) {
+  async pickFiles({ accept = '', multiple = true } = {}) {
+    // live reload on and fitting files in the live assets folder: pick from there (they stay linked)
+    if (this.live?.state.on) {
+      const exts = accept.split(',').map((x) => x.trim().toLowerCase()).flatMap((x) => (x === 'image/*' ? IMAGE_EXTS : x.startsWith('.') ? [x.slice(1)] : []));
+      const forModel = exts.some((x) => MODEL_EXTS.includes(x));
+      const mains = exts.filter((x) => (forModel ? MODEL_EXTS.includes(x) : IMAGE_EXTS.includes(x)));
+      await this.live.refresh();
+      const cands = this.live.list.files.filter((f) => mains.includes(f.path.toLowerCase().split('.').pop()));
+      if (cands.length) {
+        const how = await askChoice({ title: 'Where from?', text: 'A file from the live assets folder stays linked: saving over it updates the game right away.', choices: [{ id: 'live', label: 'From the live assets folder', sub: `${cands.length} fitting file${cands.length === 1 ? '' : 's'}` }, { id: 'disk', label: 'From your computer', sub: 'A one-time copy' }] });
+        if (!how) return [];
+        if (how === 'live') return this.pickLive(cands, forModel);
+      }
+    }
     return new Promise((resolve) => {
       const inp = el('input');
       inp.type = 'file';
@@ -397,7 +422,7 @@ export class AssetsUI {
     const big = rawMax * scale > 2500 || scene.tris > 3000;
     const o = {
       name: scene.name.replace(/[_-]+/g, ' ').trim() || 'Model', scale: Number(scale.toPrecision(4)), rotate: [0, 0, 0], zUp: scene.upAxis === 'z',
-      origin: 'bottom', texMax: 64, texFormat: 'rgba16', lighting: 'baked', use: big ? 'level' : 'prop', collision: true,
+      origin: files[0]?.livePath ? 'file' : 'bottom', texMax: 64, // from the live folder: the file's own origin (stays put on reloads) texFormat: 'rgba16', lighting: 'baked', use: big ? 'level' : 'prop', collision: true,
     };
     let pkg = null, mats = null, building = 0;
     const opts = back.querySelector('.as-opts');
@@ -494,11 +519,13 @@ export class AssetsUI {
       if (!pkg) return;
       const bytes = await encodePackage(pkg);
       const thumb = thumbnail(pkg, { materials: mats, lighting: o.lighting });
+      const live = liveOf(files[0]);
       const meta = await this.assets.addModel({
-        bytes, pkg, name: o.name || scene.name, materials: mats, lighting: o.lighting, thumb,
+        bytes, pkg, name: o.name || scene.name, materials: mats, lighting: o.lighting, thumb, live,
         source: { files: files.map((f) => f.name).slice(0, 20), format: scene.format, scale: o.scale, rotate: o.rotate, zUp: o.zUp, origin: o.origin },
       });
       if (o.use === 'level') await this.assets.updateModel(meta.id, { defaults: { ...meta.defaults, mode: 'level' } });
+      if (live) this.live?.watch(files.map((f) => f.livePath).filter(Boolean)).catch(() => {}); // linked files are watched
       this.toast(`${meta.name} is in My models (${fmtSize(bytes.length)})`, 'check');
       close();
       this.renderLibrary();
@@ -724,7 +751,8 @@ export class AssetsUI {
       const w = keepHd ? Math.min(x.w * 4, pow2(bmp.width, 512)) : x.w, h = keepHd ? Math.min(x.h * 4, pow2(bmp.height, 512)) : x.h;
       const rgba = rasterize(bmp, w, h);
       if (!keepHd) quantize(rgba, x.fmt === 'rgba' && x.bits === 16 ? 'rgba16' : x.fmt === 'ia' ? 'rgba32' : 'rgba16');
-      await this.assets.replaceTexture(x, rgba, w, h, file.name);
+      await this.assets.replaceTexture(x, rgba, w, h, file.name, liveOf(file));
+      if (file.livePath) this.live?.watch([file.livePath]).catch(() => {});
       this.toast(`Replaced ${x.name}`, 'check');
       this.render();
     });
@@ -808,7 +836,8 @@ export class AssetsUI {
       const bmp = await createImageBitmap(file);
       const s = bmp.width >= 64 && bmp.height >= 64 ? 64 : 32;
       const rgba = quantize(rasterize(bmp, s, s), 'rgba16');
-      const i = await this.assets.saveMaterial({ name: file.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' '), rgba, w: s, h: s, sharp: s > 32 });
+      const i = await this.assets.saveMaterial({ name: file.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' '), rgba, w: s, h: s, sharp: s > 32, live: liveOf(file) });
+      if (file.livePath) this.live?.watch([file.livePath]).catch(() => {});
       this.toast(`Added material #${i}`, 'check');
     });
   }
@@ -869,10 +898,128 @@ export class AssetsUI {
     await this.busy(body.querySelector('[data-a=upload]'), async () => {
       const bmp = await createImageBitmap(file);
       const mode = o.mode || (Math.abs(bmp.width / bmp.height - 2) < 0.15 ? 'panorama' : 'picture');
-      await this.assets.setSky(o.scope === 'all' ? '*' : this.engine.areaKey(), bmp, { mode, quality: o.quality || 'n64', horizon: o.horizon || 0, name: file.name.replace(/\.[^.]+$/, '') });
+      await this.assets.setSky(o.scope === 'all' ? '*' : this.engine.areaKey(), bmp, { mode, quality: o.quality || 'n64', horizon: o.horizon || 0, name: file.name.replace(/\.[^.]+$/, ''), live: liveOf(file) });
+      if (file.livePath) this.live?.watch([file.livePath]).catch(() => {});
       this.toast('New sky', 'check');
       if (this.tab === 'sky') this.renderSky(body);
     });
+  }
+
+  // ---- Live tab (live reload of the live assets folder: livereload.js) ------------------------
+
+  // Choose a file of the live assets folder: models come with the textures next to them.
+  pickLive(cands, forModel) {
+    return new Promise((resolve) => {
+      const back = this.modal('as-livepick', `<div class="as-modal-head"><div class="as-title">${ic(ICON.live, 'i')}From the live assets folder</div><span class="spacer"></span>
+          <button class="btn icon ghost" data-a="close">${ic(ICON.close, 'i')}</button></div>
+        <div class="as-lp-body"><input class="as-lp-q" type="search" placeholder="Search files"><div class="as-lp-list"></div></div>`);
+      let done = false;
+      const finish = (v) => { if (done) return; done = true; back.remove(); resolve(v); };
+      back.querySelector('[data-a=close]').onclick = () => finish([]);
+      const list = back.querySelector('.as-lp-list');
+      const draw = (q = '') => {
+        list.innerHTML = '';
+        for (const f of cands.filter((c) => c.path.toLowerCase().includes(q.toLowerCase())).slice(0, 400)) {
+          const b = el('button', 'as-lp-item', `${ic(forModel ? ICON.cube : ICON.image)}<span>${esc(f.path)}</span><small>${fmtSize(f.size)}</small>`);
+          b.onclick = async () => {
+            b.disabled = true;
+            try { finish(forModel ? await this.live.modelFiles(f.path) : [await this.live.fetchFile(f.path)]); } catch (err) { this.toast(err.message, 'x'); b.disabled = false; }
+          };
+          list.appendChild(b);
+        }
+        if (!list.children.length) list.innerHTML = '<div class="as-empty">No fitting files</div>';
+      };
+      back.querySelector('.as-lp-q').oninput = (e) => draw(e.target.value);
+      draw();
+    });
+  }
+
+  async renderLive(body) {
+    const L = this.live;
+    if (!this.liveFetched) { this.liveFetched = true; L.refresh(); }
+    const { files, dirs, root } = L.list;
+    const targets = L.targets();
+    const on = L.state.on;
+    const watchedN = files.filter((f) => L.watched(f.path)).length;
+    body.innerHTML = `<div class="as-live-head">
+        <label class="as-live-switch"><input type="checkbox" data-a="on" ${on ? 'checked' : ''}><span class="as-live-knob"></span><b>Live reload</b></label>
+        <span class="as-live-sub">${on ? `watching ${watchedN} file${watchedN === 1 ? '' : 's'}` : 'off'}</span><span class="spacer"></span>
+        <button class="btn sm ghost" data-a="check" title="Bring in everything that changed">${ic(ICON.live)}Check now</button></div>
+      <div class="as-live-head">
+        <label class="as-live-switch" title="Dying or falling out starts this level over at its start (no star screen, lives never run out)"><input type="checkbox" data-a="respawn" ${L.state.respawn ? 'checked' : ''}><span class="as-live-knob"></span><b>Respawn at level start on death</b></label></div>
+      <div class="as-tip">Folder: <code>${esc(root || 'assets')}</code><br>Check the files or folders to watch. When a checked file is saved, what uses it in this project is
+        re-imported with its settings and replaced in place: models (where they stand), game textures, materials and skies. Uncheck what you don't need: fewer checked files, quicker checks.
+        Bring files in with <b>Use…</b> below, or pick “From the live assets folder” when choosing a file in Models, Textures, Materials or Sky.</div>
+      <div class="as-live-tree"></div>
+      <div class="as-section">Recent</div><div class="as-live-log"></div>`;
+    body.querySelector('[data-a=on]').onchange = (e) => this.busy(null, () => L.setOn(e.target.checked));
+    body.querySelector('[data-a=respawn]').onchange = (e) => this.busy(null, () => L.setRespawn(e.target.checked));
+    body.querySelector('[data-a=check]').onclick = (e) => this.busy(e.currentTarget, async () => { await L.refresh(); await L.catchUp(); });
+    const tree = body.querySelector('.as-live-tree');
+    if (!files.length && !dirs.length) tree.innerHTML = '<div class="as-empty">The folder is empty. Put .fbx / .glb / .obj / .png files (or folders of them) in it.</div>';
+    // folder -> children
+    const kids = new Map([['', { dirs: [], files: [] }]]);
+    for (const d of dirs) kids.set(d, { dirs: [], files: [] });
+    const parent = (p) => (p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '');
+    for (const d of dirs) kids.get(parent(d))?.dirs.push(d);
+    for (const f of files) kids.get(parent(f.path))?.files.push(f);
+    const box = (state) => `<input type="checkbox" class="as-live-cb" ${state === 'all' || state === true ? 'checked' : ''} data-ind="${state === 'some' ? 1 : 0}">`;
+    const row = (depth, html) => { const r = el('div', 'as-live-row', html); r.style.paddingLeft = `${6 + depth * 16}px`; tree.appendChild(r); return r; };
+    if (files.length || dirs.length) {
+      const r = row(0, `${box(L.folderState(''))}<span class="as-live-name"><b>Everything</b></span>`);
+      r.querySelector('input').onchange = () => this.busy(null, () => L.toggle('', true));
+    }
+    const walk = (dir, depth) => {
+      const k = kids.get(dir);
+      if (!k) return;
+      for (const d of k.dirs) {
+        const open = this.liveOpen.has(d);
+        const r = row(depth, `${box(L.folderState(d))}<button class="as-live-twist">${open ? '▾' : '▸'}</button>${ic(ICON.folder)}<span class="as-live-name">${esc(d.split('/').pop())}</span>`);
+        r.querySelector('input').onchange = () => this.busy(null, () => L.toggle(d, true));
+        r.querySelector('.as-live-twist').onclick = () => { if (open) this.liveOpen.delete(d); else this.liveOpen.add(d); this.render(); };
+        if (open) walk(d, depth + 1);
+      }
+      for (const f of k.files) {
+        const uses = L.usesOf(f.path, targets);
+        const st = L.status.get(f.path);
+        const busy = uses.some((u) => L.busy.has(u.target.key));
+        const what = uses.length ? uses.map((u) => `<span class="as-live-tag ${u.role}">${u.role === 'main' ? KIND_NAMES[u.target.kind] : 'texture of'}: ${esc(u.target.label)}${u.target.auto && u.role === 'main' ? ' <i title="linked by its file name">(by name)</i>' : ''}</span>`).join('')
+          : `<span class="as-live-tag none">not in this project</span>`;
+        const canUse = !uses.some((u) => u.role === 'main') && (isModelPath(f.path) || isImagePath(f.path));
+        const r = row(depth, `${box(L.watched(f.path))}<span class="as-live-twist"></span>${ic(isModelPath(f.path) ? ICON.cube : isImagePath(f.path) ? ICON.image : ICON.file)}
+          <span class="as-live-name" title="${esc(f.path)}">${esc(f.path.split('/').pop())}</span>${what}
+          ${busy ? '<span class="spin"></span>' : st ? `<span class="as-live-st ${st.ok ? 'ok' : 'err'}" title="${esc(st.text)}">${st.ok ? '✓' : '!'} ${new Date(st.at).toLocaleTimeString()}</span>` : ''}
+          ${canUse ? '<button class="btn sm ghost" data-a="use">Use…</button>' : ''}`);
+        r.querySelector('input').onchange = () => this.busy(null, () => L.toggle(f.path, false));
+        r.querySelector('[data-a=use]')?.addEventListener('click', () => this.liveUse(f.path));
+      }
+    };
+    walk('', 1);
+    tree.querySelectorAll('input[data-ind="1"]').forEach((i) => { i.indeterminate = true; });
+    const log = body.querySelector('.as-live-log');
+    log.innerHTML = L.log.length ? L.log.map((e) => `<div class="as-live-logrow ${e.ok ? '' : 'err'}"><span>${new Date(e.at).toLocaleTimeString()}</span><b>${esc(e.path)}</b> ${esc(e.text)}</div>`).join('') : '<div class="as-empty">Nothing reloaded yet</div>';
+  }
+
+  // Bring a file of the live folder into the project (linked).
+  async liveUse(p) {
+    const L = this.live;
+    if (isModelPath(p)) {
+      const files = await this.busy(null, () => L.modelFiles(p));
+      if (files) this.openImport(files);
+      return;
+    }
+    const how = await askChoice({ title: `Use ${p.split('/').pop()}`, text: 'It stays linked: saving over the picture updates the game.', choices: [
+      { id: 'texture', label: 'Replace a game texture', sub: this.tex.sel ? `The one picked in Textures: ${this.tex.sel.name}` : 'Pick one in the Textures tab first' },
+      { id: 'material', label: 'New block / terrain material' },
+      { id: 'sky', label: 'Sky of this level' }] });
+    if (!how) return;
+    if (how === 'texture' && !this.tex.sel) { this.toast('Pick the game texture in the Textures tab, then Replace with image → From the live assets folder', 'sparkles'); this.open('textures'); return; }
+    const file = await this.busy(null, () => L.fetchFile(p));
+    if (!file) return;
+    if (how === 'texture') await this.replaceFromFile(this.tex.sel, file);
+    else if (how === 'material') await this.materialFromFile(file);
+    else { this.open('sky'); await this.skyFromFile(file); }
+    this.open('live');
   }
 
   // ---- Mario tab -------------------------------------------------------------------------

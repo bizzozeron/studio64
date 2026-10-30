@@ -16,6 +16,7 @@ import { openAiSettings, fetchMenu } from './ai_settings.js';
 import { applyAiMode, aiOn } from './ai_mode.js';
 import { Assets } from './assets.js';
 import { AssetsUI } from './assets_ui.js';
+import { LiveReload } from './livereload.js';
 import { Hub } from './hub.js';
 import { TestTools } from './testing.js';
 import { installObjectsEngine, installObjectsEditor } from './objects/index.js';
@@ -116,11 +117,14 @@ function bootEngine(level) {
     commit: (op) => { send({ type: 'edit', op }); flashSaved(); }, getPatch: () => engine.patch,
   });
   state.assets.load();
+  // live reload of the live assets folder (livereload.js, server/routes/livereload.js)
+  state.liveReload = new LiveReload({ assets: state.assets, send, toast });
   // roads, fences and painted plants (paths/): before the first area loads
   state.paths = installPathsRuntime({ engine, world: state.world, assets: state.assets, toast });
   // areas, warps, hub and environment (worldflow.js); before the first area loads
   state.worldFlow = new WorldFlow({ engine, world: state.world, send, toast, getLevels: () => state.levels, catalog: catalog() });
   state.studio.worldFlow = state.worldFlow;
+  state.worldFlow.respawnOnDeath = () => !!(state.liveReload?.state.respawn); // live reload's respawn switch
   state.worldFlow.onPatch();
   state.studio.customLevels = () => state.levels;
   attachStoryRuntime(state, { frame: $('#game-frame'), toast }); // story texts, events and cutscenes: before the first area loads
@@ -254,6 +258,7 @@ async function onMessage(msg) {
       if (state.engine) state.engine.setPatch(msg.patch);
       bootEngine(msg.project.boot?.level || 9);
       state.hub?.flush((m) => state.ws.send(JSON.stringify(m))); // changes made while offline
+      state.liveReload?.connected();
       break;
     }
     case 'rpc': {
@@ -1139,7 +1144,7 @@ function setupEditor() {
   state.testing = new TestTools({ state, send, toast, hub: state.hub }); // play-testing and debug tools (testing.js)
   state.soundUI = new SoundUI({ engine: state.engine, world: state.world, editor, send, toast, getAudio: () => state.audio });
   $('#sound-btn').onclick = () => state.soundUI.open();
-  state.assetsUI = new AssetsUI({ assets: state.assets, engine: state.engine, editor, editorUI: state.editorUI, levelsUI: state.levelsUI, toast, chat: (text) => submit(text) });
+  state.assetsUI = new AssetsUI({ assets: state.assets, engine: state.engine, editor, editorUI: state.editorUI, levelsUI: state.levelsUI, toast, chat: (text) => submit(text), live: state.liveReload });
   attachStoryUI(state, { send, toast }); // the Story panel and build mode's Logic tab (story/)
   installObjectsEditor(state.objects, { editor, editorUI: state.editorUI, catalog: state.catalog }); // path tool, scene panel, My objects, Game panel
   installPathsEditor(state.paths, { editor, editorUI: state.editorUI, studio: state.studio, toast }); // build mode's Roads and Nature tabs

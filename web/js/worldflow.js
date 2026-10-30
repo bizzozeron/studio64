@@ -326,6 +326,14 @@ export class WorldFlow {
     const hub = this.hubTarget();
     const atHub = hub && this.sameLevel(hub, this.here());
     const t = !exitCourse ? this.nodeTargets.get(src) : null;
+    // live reload's "respawn at the level start" switch: dying or falling out (not into an area set as
+    // "falling leads to") starts this level over at its entry, without the star screen
+    if (!t && !exitCourse && (src === 0xf1 || src === 0xf3) && this.respawnOnDeath?.()) {
+      if (e.level === STUDIO_LEVEL) e.pendingCustom = e.customLevel;
+      M._studio_warp_redirect(e.level, 1, e.level === 6 ? 0 : 10, 1, 2);
+      M._studio_set_lives_min?.(4);
+      return;
+    }
     const redirect = (to, n, intro = -1) => {
       const d = this.resolve(to);
       let force = 0;

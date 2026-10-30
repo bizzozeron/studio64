@@ -40,7 +40,7 @@ const ENGINE = path.resolve(HERE, '..', '..', 'engine', 'src', 'studio');
 // what the engine's older decomp called otherwise (renames.json)
 export const RENAMES = JSON.parse(fs.readFileSync(path.join(HERE, 'renames.json'), 'utf8'));
 const INSTRUMENT_NAMES = JSON.parse(fs.readFileSync(path.join(HERE, 'instrument_names.json'), 'utf8'));
-export const ENGINE_MODULES = ['studio.h', 'studio_assets.h', 'objects.h', 'flow.c', 'motion.c', 'actor.c', 'rules.c', 'story.c', 'audio.c'];
+export const ENGINE_MODULES = ['studio.h', 'studio_assets.h', 'objects.h', 'flow.c', 'motion.c', 'actor.c', 'rules.c', 'story.c', 'audio.c', 'camcollide.c'];
 // On the N64 an object's behavior is a RAM address and the behavior symbols are segment 0x13
 // addresses (the PC port has one kind of address): comparisons go through segmented_to_virtual.
 // What the engine tells the page (EM_ASM: Module.studioX(...)) is a C call here (s64_page_studioX,

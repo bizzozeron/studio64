@@ -12,6 +12,10 @@ server/sandbox/
 .runtime/
 dist/
 
+# The live assets folder (live reload, server/routes/livereload.js): your own working files
+/assets/*
+!/assets/README.txt
+
 # Test output (logs, screenshots, temporary projects)
 tests/out/
 
@@ -57,3 +61,4 @@ promo/v5/art/window/*.png
 
 # a private joke sketch (it shows Mario): never in the repository
 promo/sketch/
+*.z64

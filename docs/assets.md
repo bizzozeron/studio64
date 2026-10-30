@@ -89,6 +89,58 @@ The **Mario** tab colours overalls, shirt & arms, gloves, shoes, skin, hair and 
 split from the shirt), with presets (Luigi, Wario, Waluigi, Fire, Ice, Classic NES, Gold, Shadow,
 Builder, Doctor, Pink). *Look at Mario* turns the camera around him while you choose.
 
+## Live reload (the assets folder)
+
+Studio 64 has an **`assets/`** folder next to it (made on the first start; `STUDIO_LIVE_ASSETS=<path>`
+moves it). Work on your files there in Blender, Photoshop or anything else and the game takes every
+save right away:
+
+1. **Assets → Live**: turn on **Live reload** (per project; a green dot on the Assets button shows it).
+2. **Check** the files or whole folders to watch, **uncheck** what you don't need (a folder's box
+   checks or unchecks everything inside; a file can be unchecked inside a checked folder). Only
+   checked files are looked at, so fewer checked files means quicker checks.
+3. Bring files into the project from the folder: **Use…** in the Live tab, or, while live reload
+   is on, any file picker (Models → Choose files, Textures → Replace with image, Materials → From an
+   image, Sky → Choose a picture) offers **From the live assets folder**. Files picked from there are
+   linked and checked. Models and pictures imported earlier by drag & drop are linked **by file
+   name** when a file of the same name is in the folder.
+
+When a checked file's contents change (SHA-1 of the file, once it stopped growing; just touching it
+does nothing), what uses it is re-imported with the settings it was imported with and replaced in
+place:
+
+| File | Replaces |
+|---|---|
+| `.fbx` `.glb` `.gltf` `.obj` `.zip` | the model, under the same id: scale, orientation, origin, texture size/format and per-material surfaces (matched by material name) stay; every placement is rebuilt where it stands, collision included, while Mario keeps playing |
+| a texture next to a model (`.png` `.jpg` `.tga` `.mtl` `.bin` ...) | that model (check the texture too) |
+| a picture linked to a game texture | the texture replacement (same size choice: game size or sharp) |
+| a picture linked to a material | the material (same number) |
+| a picture linked to a sky | the sky (same level, or all levels) |
+
+A reloaded model always uses **the file's own origin** (the model's 0,0,0 in Blender / the FBX), so it
+stays exactly where the file puts it however its size changes; models picked from the live folder are
+imported that way too. (A model imported earlier with *Bottom center* or *Center* switches to the
+file's origin on its first live reload, so it can shift once.) When a model placed in the current
+level reloads, Mario is put back where he was, about 60 units higher (above the new ground if it
+rose there), and falls back down.
+
+**Respawn at level start on death** (also in the Live tab): while it is on, dying or falling out
+of the level starts the current level over at its start (area 1, its entry; no star screen), and
+lives never run out. Falling into an area set as "falling leads to" still goes there. (Keeping
+the lives topped up needs an engine built with this change: `studio_set_lives_min`, debug.c.)
+
+Each reload is one undo step ("Live reload: castle.fbx"). Files that changed while Studio 64 was
+closed are brought in when the project opens (or with **Check now**). With several tabs open on a
+project, one of them does the re-import and the others follow. Keep each model and its textures in
+its own sub-folder: a model re-reads the textures in its folder.
+
+How it works: `server/routes/livereload.js` (the folder, polling once a second, hashes, routes
+`GET/PUT /api/projects/:id/livereload`, `GET /api/livereload/file?path=`, websocket
+`livereload_hello` / `livereload_state` / `livereload_tree` / `livereload_changed`; the settings are
+`project.livereload = { on, rules: { path: true | false } }`, nearest rule wins) and
+`web/js/livereload.js` (links, re-import, the queue). A linked asset entry carries
+`live: { path, hash }`.
+
 ## Claude
 
 Claude's tools (server/tools/assets.js): `list_assets`, `place_model` (where like `spawn`, prop or

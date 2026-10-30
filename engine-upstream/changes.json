@@ -1077,7 +1077,7 @@
    ]
   },
   "src/game/camera.c": {
-   "sha256": "ec02cd659688b9f699c120145da20c53cf52f51ba81b278d0e77f852aef2ab7e",
+   "sha256": "99acef9f093a29ac358ace449b66600a6de10c30a5cd4c73ecefa5666d237314",
    "hunks": [
     [
      7,
@@ -1119,6 +1119,17 @@
       "            gc->roll = 0;",
       "            return;",
       "        }",
+      "    }"
+     ]
+    ],
+    [
+     3561,
+     0,
+     [
+      "    {",
+      "        // Studio 64: camera wall collision (studio/camcollide.c): moves in when a wall is between Mario and it",
+      "        extern void studio_camera_collide(f32 *pos, f32 *focus);",
+      "        studio_camera_collide(gc->pos, gc->focus);",
       "    }"
      ]
     ]

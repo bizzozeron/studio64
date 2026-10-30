@@ -162,6 +162,14 @@ u32 studio_debug_frames(void) {
     return sFramesRun;
 }
 
+// Live reload's "respawn at the level start" (web/js/livereload.js): lives never run out (no game over).
+EMSCRIPTEN_KEEPALIVE
+void studio_set_lives_min(s32 n) {
+    if (gMarioState != NULL && gMarioState->numLives < n) {
+        gMarioState->numLives = (s8) n;
+    }
+}
+
 // Tests: an object's action (and set it, action >= 0: sub-action and timer start over).
 EMSCRIPTEN_KEEPALIVE
 s32 studio_debug_obj_action(s32 slot, s32 action) {

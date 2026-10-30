@@ -39,6 +39,36 @@ They work while playing and building, never while typing in a field.
   best time per level and project. It counts game frames, so pausing, slow motion and lag do
   not change the time.
 
+## Camera wall collision
+
+Built into the game and always on: in the studio, in the exported playable game and in N64 ROM
+exports (the same `camcollide.c` is one of the engine modules the base ROM is built with,
+server/romexport/base.js, hooked into the decomp's camera.c by decomp-changes.json). The ray only
+looks at the collision grid's cells under it, so it is cheap enough for the N64. The camera has two
+states:
+
+- **Free**: the game's own camera, untouched. It swings around things: a tombstone or a tree between
+  it and Mario changes nothing.
+- **Zoomed in**: entered when the camera itself strikes geometry (its path runs into a wall, or a wall
+  is right at it, as when Mario walks deep into a room and the camera behind him meets the back
+  wall). It moves in front of what it struck at once (you never look through it). Zoomed, it acts
+  the same way: another thing that comes between it and Mario is ignored until the camera runs
+  into that too, and then it zooms in deeper. With nothing at or behind it, it eases back out
+  (about a second), stopping in front of the next thing it meets, and is free again.
+
+Only the camera's distance changes, never its direction, so camera modes, C-buttons and turning
+work as before. Only surfaces facing the camera count (you can see out of one-sided shells), and the
+game's camera-only surfaces don't (no-cam-collision, intangible, camera boundaries). It is off in
+cutscenes and first person (C-up); side-scroller / top-down area cameras and vehicles use their own.
+Tuning (top of camcollide.c): `sMargin` (gap in front of the wall, 45), `sTouch` (how close counts as
+striking, 90), `sEase` (ease-out speed, 0.12 per frame), `sMinDist` (closest to Mario, 70).
+
+Code: `engine/src/studio/camcollide.c` (`studio_camcollide_set(on, margin, ease)`,
+`studio_camcollide_state()`), called from `update_graph_node_camera` in sm64ex's camera.c
+(engine-upstream/changes.json; for the ROM: server/romexport/decomp-changes.json). After changing it:
+`Rebuild Engine.bat` / `npm run build:engine` for the studio; the next ROM export rebuilds the base ROM
+by itself (see ROM export).
+
 ## Time
 
 **Pause** stops the game on the current frame (the picture stays); **Frame** runs exactly one
