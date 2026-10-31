@@ -288,8 +288,9 @@ export class AssetsUI {
     const b = m.bounds || { min: [-500, 0, -500], max: [500, 200, 500] };
     const rec = this.assets.makeRecord(m.id, { x: 0, y: 0, z: 0, yaw: 0 }, { mode: 'level', collision: true });
     const cx = Math.round((b.min[0] + b.max[0]) / 2), cz = Math.round((b.min[2] + b.max[2]) / 2);
-    // an invisible death floor far below, like the game's levels have
-    const floor = { uid: 1 + Math.floor(Math.random() * 0x7efffffe), block: { shape: 0, sx: 16000, sy: 100, sz: 16000, steps: 0, top: 0, side: 0, surface: 0x0A, flags: 1, color: 0xffffff }, x: 0, y: Math.round(Math.max(-8000, b.min[1] - 2500)), z: 0, yaw: 0, pitch: 0, roll: 0, name: 'Death floor' };
+    // an invisible death floor far below, like the game's levels have (a death plane kills within 2048
+    // units above it, so it goes 4500 below the model: Mario dies about 2500 below its lowest point)
+    const floor = { uid: 1 + Math.floor(Math.random() * 0x7efffffe), block: { shape: 0, sx: 16000, sy: 100, sz: 16000, steps: 0, top: 0, side: 0, surface: 0x0A, flags: 1, color: 0xffffff }, x: 0, y: Math.round(Math.max(-15500, b.min[1] - 4500)), z: 0, yaw: 0, pitch: 0, roll: 0, name: 'Death floor' };
     const area = { objects: [rec, floor], removals: [], warps: [], settings: { sky: 0, music: 3, spawn: { x: cx, y: Math.round(Math.min(30000, b.max[1] + 300)), z: cz, yaw: 0 } } };
     this.levelsUI.createLevel('model', area, m.name);
     this.toast(`New level: ${m.name}`, 'check');

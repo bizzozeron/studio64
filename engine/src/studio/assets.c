@@ -196,6 +196,8 @@ struct AssetMat {
     f32 *verts;  // triangles: 3 * VERT_FLOATS per triangle
     s32 ntri, cap;
     s32 v0;      // its first vertex in the model's vtx (3 per triangle)
+    s8 *nrm;     // optional per-vertex normals (3 per vertex, -127..127, studio_model_normals)
+    s32 nnrm, ncap; // triangles with normals so far
 };
 
 struct AssetModel {
@@ -210,6 +212,7 @@ struct AssetModel {
     s32 tris;
     Vtx *vtx;                       // the display lists' vertices
     u8 *base;                       // their colours as baked for the default sun (relighting)
+    s8 *nrm;                        // their normals (3 per vertex) when the page sent them: smooth relighting
     s32 nverts;
     Gfx *dls[3];                    // one display list per layer
     struct GraphNode *dlNodes[3];   // their graph nodes (children of node)
@@ -268,6 +271,12 @@ static void model_free_buffers(struct AssetModel *m) {
     free(m->dyn);
     free(m->vtx);
     free(m->base);
+    free(m->nrm);
+    m->nrm = NULL;
+    for (i = 0; i < m->nmats; i++) {
+        free(m->mats[i].nrm);
+        m->mats[i].nrm = NULL;
+    }
     for (i = 0; i < 3; i++) {
         free(m->dls[i]);
         free(m->dlNodes[i]);
@@ -389,6 +398,25 @@ EMSCRIPTEN_KEEPALIVE s32 studio_model_tris(s32 id, s32 matIndex, const f32 *v, s
     memcpy(mat->verts + mat->ntri * 3 * VERT_FLOATS, v, ntri * 3 * VERT_FLOATS * sizeof(f32));
     mat->ntri += ntri;
     return mat->ntri;
+}
+
+// Normals of the triangles of material `mat` (after its studio_model_tris, in the same order): 3 vertices
+// of nx ny nz, -127..127 (the file's normals, smooth or flat as modelled). The area's sun then shades each
+// vertex by its own normal (model_relight); without them it uses each triangle's face normal (faceted).
+EMSCRIPTEN_KEEPALIVE s32 studio_model_normals(s32 id, s32 matIndex, const s8 *n, s32 ntri) {
+    struct AssetModel *m = model_by_id(id);
+    struct AssetMat *mat;
+    if (m == NULL || matIndex < 0 || matIndex >= m->nmats || ntri <= 0) {
+        return 0;
+    }
+    mat = &m->mats[matIndex];
+    if (mat->nnrm + ntri > mat->ncap) {
+        mat->ncap = (mat->nnrm + ntri) * 2;
+        mat->nrm = realloc(mat->nrm, mat->ncap * 9);
+    }
+    memcpy(mat->nrm + mat->nnrm * 9, n, ntri * 9);
+    mat->nnrm += ntri;
+    return mat->nnrm;
 }
 
 // Collision triangles in model space: 9 s16 per triangle plus one surface type each.
@@ -581,6 +609,7 @@ static void model_relight(struct AssetModel *m) {
         for (t = 0; t < mat->ntri; t++) {
             Vtx *v = &m->vtx[mat->v0 + t * 3];
             const u8 *b = &m->base[(mat->v0 + t * 3) * 4];
+            const s8 *vn = m->nrm != NULL ? &m->nrm[(mat->v0 + t * 3) * 3] : NULL;
             f32 k[3] = { 1.0f, 1.0f, 1.0f };
             if (mat->v0 + t * 3 + 3 > m->nverts) break;
             if (!unlit) {
@@ -589,8 +618,13 @@ static void model_relight(struct AssetModel *m) {
                 studio_light_ratio(ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx, k);
             }
             for (j = 0; j < 3; j++) {
+                f32 kv[3] = { k[0], k[1], k[2] };
+                // the vertex's own normal (smooth shading as modelled), when there is one
+                if (!unlit && vn != NULL && (vn[j * 3] | vn[j * 3 + 1] | vn[j * 3 + 2]) != 0) {
+                    studio_light_ratio(vn[j * 3], vn[j * 3 + 1], vn[j * 3 + 2], kv);
+                }
                 for (c = 0; c < 3; c++) {
-                    f32 x = b[j * 4 + c] * k[c];
+                    f32 x = b[j * 4 + c] * kv[c];
                     v[j].v.cn[c] = x > 255.0f ? 255 : (u8) x;
                 }
             }
@@ -690,6 +724,23 @@ EMSCRIPTEN_KEEPALIVE s32 studio_model_end(s32 id) {
         memcpy(&m->base[i * 4], vtx[i].v.cn, 4);
     }
     m->bytes += vi * 4 + 4;
+    // the normals in vtx order (a material without them, or with a different count: zeros = face normals)
+    {
+        s32 anyN = FALSE;
+        for (i = 0; i < m->nmats; i++) {
+            if (m->mats[i].nrm != NULL && m->mats[i].nnrm == m->mats[i].ntri && m->mats[i].ntri > 0) anyN = TRUE;
+        }
+        free(m->nrm);
+        m->nrm = anyN ? calloc(vi * 3 + 3, 1) : NULL;
+        if (m->nrm != NULL) {
+            for (i = 0; i < m->nmats; i++) {
+                struct AssetMat *mat = &m->mats[i];
+                if (mat->nrm == NULL || mat->nnrm != mat->ntri || mat->ntri <= 0 || mat->v0 + mat->ntri * 3 > vi) continue;
+                memcpy(&m->nrm[mat->v0 * 3], mat->nrm, mat->ntri * 9);
+            }
+            m->bytes += vi * 3 + 3;
+        }
+    }
     sAssetBytes += m->bytes - bytes0;
     model_relight(m);
     // the source triangles are no longer needed
@@ -697,6 +748,9 @@ EMSCRIPTEN_KEEPALIVE s32 studio_model_end(s32 id) {
         free(m->mats[i].verts);
         m->mats[i].verts = NULL;
         m->mats[i].cap = 0;
+        free(m->mats[i].nrm);
+        m->mats[i].nrm = NULL;
+        m->mats[i].nnrm = m->mats[i].ncap = 0;
     }
     return total;
 }
@@ -868,7 +922,9 @@ void studio_assets_add_surfaces(void) {
                 f32 wx = lx * mtx[0][0] + ly * mtx[1][0] + lz * mtx[2][0] + mtx[3][0];
                 f32 wy = lx * mtx[0][1] + ly * mtx[1][1] + lz * mtx[2][1] + mtx[3][1];
                 f32 wz = lx * mtx[0][2] + ly * mtx[1][2] + lz * mtx[2][2] + mtx[3][2];
-                if (fabsf(wx) > 8190.0f || fabsf(wz) > 8190.0f || fabsf(wy) > 32000.0f) out++;
+                // (the collision grid's edge: LEVEL_BOUNDARY_MAX, which Studio 64 doubled to 16384. This said
+                // 8190, the original game's, so models' triangles past +-8190 had no collision)
+                if (fabsf(wx) > LEVEL_BOUNDARY_MAX - 2 || fabsf(wz) > LEVEL_BOUNDARY_MAX - 2 || fabsf(wy) > 32000.0f) out++;
                 w[j][0] = clamp16(wx);
                 w[j][1] = clamp16(wy);
                 w[j][2] = clamp16(wz);

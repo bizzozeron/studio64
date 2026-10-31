@@ -246,6 +246,18 @@ export function uploadPackage(engine, slot, pkg, meta = {}) {
     new Float32Array(M.HEAPU8.buffer, ptr, buf.length).set(buf);
     M._studio_model_tris(slot, engineMat[k], ptr, list.length);
     M._free(ptr);
+    // the file's normals too (smooth or flat as modelled), so the area's sun shades each vertex by its
+    // own normal instead of the triangle's face (engine/src/studio/assets.c, studio_model_normals);
+    // flat-lit materials need none. (An engine without the function keeps the face normals.)
+    if (M._studio_model_normals && !flat) {
+      const nb = new Int8Array(list.length * 9);
+      let q = 0;
+      for (const t of list) for (let j = 0; j < 9; j++) nb[q++] = pkg.nrm[t * 9 + j];
+      const np = M._malloc(nb.length);
+      M.HEAPU8.set(new Uint8Array(nb.buffer), np);
+      M._studio_model_normals(slot, engineMat[k], np, list.length);
+      M._free(np);
+    }
     drawn += list.length;
     const surface = s.surface || 'normal';
     if (surface === 'water') {

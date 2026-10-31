@@ -394,6 +394,7 @@ export class WorldFlow {
     if (isHub && (hub.area || 1) === area) this.placeHubReturns(key, s);
     this.zonesPending = true;
     setTimeout(() => this.emit(), 0);
+    setTimeout(() => { try { this.lowerDeathFloors(key); } catch (err) { console.warn('death floor', err); } }, 300);
   }
 
   // Return points in the hub: in front of the entrance Mario left through, else the spawn.
@@ -685,7 +686,24 @@ export class WorldFlow {
     for (const k of Object.keys(fields)) if (fields[k] === null) delete env[k];
     this.world.setSettings({ env }, summary);
     this.reapplyEnv();
+    if (Number.isFinite(fields.deathY)) this.lowerDeathFloors();
     return env;
+  }
+
+  // A level's invisible death floor (a death-plane block, as "New level from this model" makes) kills
+  // Mario once he is within 2048 units above it (the game's rule for death planes), whatever "Falling
+  // below" says. With a death height set, those floors go well below it, so the height decides.
+  lowerDeathFloors(key = this.key()) {
+    const deathY = this.area(key).settings?.env?.deathY;
+    if (!Number.isFinite(deathY)) return 0;
+    const target = Math.max(-15500, Math.round(deathY - 2600)); // (collision ends at +-16384)
+    let n = 0;
+    for (const r of this.records(key)) {
+      if (r.block?.surface !== 0x0A || !(r.y > target)) continue;
+      this.updateRecord(key, r.uid, { y: target }, 'Moved the death floor below the death height');
+      n++;
+    }
+    return n;
   }
 
   createArea(levelId, { name, template = 'room', area: given } = {}) {

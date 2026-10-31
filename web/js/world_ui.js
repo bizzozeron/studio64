@@ -330,7 +330,7 @@ export class WorldUI {
       ${cam.mode === 'side' || cam.mode === 'top' ? `<div class="wd-range"><span>Distance</span><input type="range" min="400" max="4000" step="50" data-k="camera.dist" value="${cam.dist ?? 1400}"><b>${cam.dist ?? 1400}</b></div>` : ''}
       <div class="wd-sub">Falling</div>
       <div class="wd-row"><label class="wd-check"><input type="checkbox" data-k="death.on" ${Number.isFinite(env.deathY) ? 'checked' : ''}> Falling below</label>
-        <input type="number" class="wd-num" data-k="deathY" value="${Number.isFinite(env.deathY) ? env.deathY : -1000}" step="100" ${Number.isFinite(env.deathY) ? '' : 'disabled'}></div>
+        <input type="number" class="wd-num" data-k="deathY" value="${Number.isFinite(env.deathY) ? env.deathY : -1000}" step="100" title="Mario loses a life below this height (typing a height turns it on)" style="${Number.isFinite(env.deathY) ? '' : 'opacity:.6'}"></div>
       <div class="wd-row wd-fall"><span>leads to</span><b>${env.fallTo ? esc(this.destName(env.fallTo)) : 'losing a life'}</b>
         <button class="btn sm" data-a="fallto">${env.fallTo ? 'Change' : 'Another area…'}</button>${env.fallTo ? '<button class="btn icon ghost sm" data-a="fallclear" title="Back to losing a life">' + icon('x', 'sm') + '</button>' : ''}</div>`;
     const set = (k, v, summary) => {
@@ -374,7 +374,12 @@ export class WorldUI {
         inp.onchange = () => {
           // an empty field is not height 0 (that would kill Mario on most grounds)
           if (inp.value.trim() === '' || !Number.isFinite(Number(inp.value))) { inp.value = env.deathY ?? inp.defaultValue; return; }
-          this.flow.setEnv({ deathY: Number(inp.value) }, 'Changed the death height');
+          // (typing a height also turns it on: the box is no longer greyed out and locked while off)
+          const was = Number.isFinite(env.deathY);
+          this.flow.setEnv({ deathY: Number(inp.value) }, was ? 'Changed the death height' : 'Set a death height');
+          const cb = box.querySelector('[data-k="death.on"]');
+          if (cb) cb.checked = true;
+          inp.style.opacity = '';
         };
       }
     });
