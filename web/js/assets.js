@@ -164,6 +164,8 @@ export class Assets {
     this.M._studio_assets_area_reset();
     this.M._studio_tex_flush(); // everything drawn in this area shows up in "In this level"
     this.applySky(key).catch((err) => console.error('sky', err));
+    try { this.applyMario(this.marioColorsFor(key)); } catch (err) { console.error('mario colours', err); } // (a stage can have its own)
+    this.emit('area');
   }
 
   afterArea(key) {
@@ -790,7 +792,22 @@ export class Assets {
     return Object.fromEntries(MARIO_PARTS.map(([k], i) => [k, hex(((v) => [(v >> 16) & 255, (v >> 8) & 255, v & 255])(M._studio_mario_default_color(i)))]));
   }
 
-  applyMario(colors = this.meta.mario?.colors || {}) {
+  // Mario's colours are for all stages (meta.mario.colors), or a stage's own (meta.mario.levels[stage]:
+  // { colors, preset }: the whole set, used instead). A stage is a level: an original one by number
+  // ("9"), a custom one by id ("c:<id>"), all its areas together.
+  marioStage(key = this.key()) {
+    const k = String(key || '');
+    return k.startsWith('c:') ? k.split(':').slice(0, 2).join(':') : k.split(':')[0];
+  }
+
+  marioOwn(key = this.key()) { return this.meta.mario?.levels?.[this.marioStage(key)] || null; }
+
+  marioColorsFor(key = this.key()) {
+    const own = this.marioOwn(key);
+    return { ...((own ? own.colors : this.meta.mario?.colors) || {}) };
+  }
+
+  applyMario(colors = this.marioColorsFor()) {
     const M = this.M;
     if (!M?._studio_mario_color) return;
     MARIO_PARTS.forEach(([k], i) => {
@@ -799,11 +816,28 @@ export class Assets {
     });
   }
 
-  async setMario(colors, preset = null) {
+  // scope: 'all' (every stage without colours of its own) or 'here' (this stage's own set)
+  async setMario(colors, preset = null, scope = 'all') {
     const clean = {};
     for (const [k] of MARIO_PARTS) if (colors[k]) clean[k] = hex(parseColor(colors[k]));
-    this.applyMario(clean);
-    await this.save('mario', { colors: clean, preset });
+    const cur = this.meta.mario || {};
+    const next = scope === 'here'
+      ? { ...cur, levels: { ...(cur.levels || {}), [this.marioStage()]: { colors: clean, preset } } }
+      : { ...cur, colors: clean, preset };
+    this.meta.mario = next;
+    this.applyMario();
+    await this.save('mario', next, scope === 'here' ? 'Mario\'s colours in this stage' : null);
+  }
+
+  // This stage back to the colours of all stages
+  async clearMarioHere() {
+    const cur = this.meta.mario || {};
+    const levels = { ...(cur.levels || {}) };
+    delete levels[this.marioStage()];
+    const next = { ...cur, levels };
+    this.meta.mario = next;
+    this.applyMario();
+    await this.save('mario', next, 'Mario\'s colours: this stage uses the default again');
   }
 }
 
@@ -904,11 +938,12 @@ function registerAssetRpcs(A) {
     return { ok: true };
   });
 
-  registerRpc('mario_colors', async function ({ preset, colors = {} } = {}) {
-    const base = preset && MARIO_PRESETS[preset] ? MARIO_PRESETS[preset].colors : (preset ? null : A.meta.mario?.colors || {});
+  registerRpc('mario_colors', async function ({ preset, colors = {}, stage = 'all' } = {}) {
+    const here = stage === 'here';
+    const base = preset && MARIO_PRESETS[preset] ? MARIO_PRESETS[preset].colors : (preset ? null : (here ? A.marioColorsFor() : A.meta.mario?.colors || {}));
     if (preset && !base) throw new Error(`unknown preset "${preset}" (${Object.keys(MARIO_PRESETS).join(', ')})`);
     const next = { ...base, ...colors };
-    await A.setMario(next, preset || null);
-    return { colors: next };
+    await A.setMario(next, preset || null, here ? 'here' : 'all');
+    return { colors: next, stage: here ? 'this stage only' : 'all stages without colours of their own' };
   });
 }

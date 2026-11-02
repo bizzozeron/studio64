@@ -385,6 +385,9 @@ export function buildRom(kit, project, dumps, { title, calls = new Map(), object
       s.align(8).label(`${prefix}_lights`);
       lights1(s, ...env.lights);
       const mesh = buildMesh(s, dump, prefix, `${prefix}_lights`, { fog: env.fog, tint: env.tint });
+      // (on the N64 the fog takes the vertex alpha a blended material blends by: opaque and cut-out ones get
+      // a fog overlay (mesh.js), see-through ones can't and draw without fog)
+      if (mesh.stats.blendedInFog) issue(lv, `area ${a.index}`, `${mesh.stats.blendedInFog} see-through blended material(s) draw without fog: on the N64 the fog uses the vertex alpha their blend needs`);
       const col = buildCollision(s, dump, `${prefix}_col`, { deathY: st.env?.deathY ?? null });
       writeAreaGeo(s, `${prefix}_geo`, mesh, sky, sym, env);
       const movers = writeMovers(s, lv, a.key, `${prefix}_lights`, env);
@@ -721,6 +724,34 @@ export function buildRom(kit, project, dumps, { title, calls = new Map(), object
   info.writeUInt32BE(mask[1] >>> 0, 16);
   if (hub) { info.writeInt16BE(hub.levelNum, 20); info.writeUInt8(hubArea, 22); info.writeUInt8(WARP_NODE_0A, 23); }
   for (const [num, off] of levelHeaders) if (num < 40) info.writeUInt32BE(off, 0xD40 + num * 4);
+  // Mario's colours (Assets -> Mario; s64_mario.c): set 0 for every stage, then the sets of stages with
+  // their own (meta.mario.levels: "<level number>" or "c:<custom level id>"), and per level number its set
+  const MARIO = ['overalls', 'shirt', 'gloves', 'shoes', 'skin', 'hair', 'cap'];
+  const marioSet = (n, colors) => {
+    let parts = 0;
+    MARIO.forEach((k, i) => {
+      const m = /^#?([0-9a-f]{6})$/i.exec(String(colors?.[k] || ''));
+      if (!m) return;
+      const v = parseInt(m[1], 16), at = 0xE00 + n * 24 + 2 + i * 3;
+      parts |= 1 << i;
+      info.writeUInt8((v >> 16) & 255, at);
+      info.writeUInt8((v >> 8) & 255, at + 1);
+      info.writeUInt8(v & 255, at + 2);
+    });
+    info.writeUInt16BE(parts, 0xE00 + n * 24);
+  };
+  const marioMeta = project.assets?.mario || {};
+  marioSet(0, marioMeta.colors);
+  let sets = 0;
+  for (const [stage, own] of Object.entries(marioMeta.levels || {})) {
+    let num = null;
+    if (stage.startsWith('c:')) num = plan.levels.find((l) => !l.vanilla && l.id === stage.slice(2))?.levelNum ?? null;
+    else if (/^\d+$/.test(stage) && !replaced.has(Number(stage))) num = Number(stage);
+    if (num == null || num < 0 || num >= 40) continue; // (a level left out of the ROM)
+    if (sets >= 15) { issues.push({ level: 'Mario', name: 'Stage colours', why: 'a ROM holds 15 stages with colours of their own: the rest use the colours of every stage' }); break; }
+    marioSet(++sets, own?.colors);
+    info.writeUInt8(sets, 0xF80 + num);
+  }
   info.copy(rom, INFO_ROM);
 
   // the ROM's name in its header

@@ -31,7 +31,7 @@ export function changedFile(rel, pristine) {
 
 // The hack's own settings, which an export writes into the ROM (rom.js, writeInfo): read at boot.
 export const INFO_ROM = 0x01000000;
-export const INFO_SIZE = 0xE00;
+export const INFO_SIZE = 0xFB0; // (struct S64Info, n64/s64_hack.h; the ROM keeps 0x1000 for it)
 
 // The ROM's own code: n64/ (what only the ROM needs) and the engine's Studio 64 modules (the same
 // code the web build runs), into src/s64/. The engine modules build against n64/n64compat.h.

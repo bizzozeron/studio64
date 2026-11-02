@@ -3349,8 +3349,57 @@
    ]
   },
   "src/pc/gfx/gfx_opengl.c": {
-   "sha256": "68c502cb04a2be198a8b9a52592a5e21f976d5f67d11ae446d1706561cde2bbe",
+   "sha256": "1a1b45ed41efd127a5878558ebd98a0c6d5cf71f8f24fe29c93f45e625e5931c",
    "hunks": [
+    [
+     212,
+     0,
+     [
+      "    bool opt_studio_blend = (shader_id & SHADER_OPT_STUDIO_BLEND) != 0; // Studio 64: 2 textures by shade alpha",
+      "    int input_size = opt_alpha || opt_studio_blend ? 4 : 3;"
+     ]
+    ],
+    [
+     264,
+     3,
+     [
+      "        vs_len += sprintf(vs_buf + vs_len, \"attribute vec%d aInput%d;\\n\", input_size, i + 1);",
+      "        vs_len += sprintf(vs_buf + vs_len, \"varying vec%d vInput%d;\\n\", input_size, i + 1);",
+      "        num_floats += input_size;"
+     ]
+    ],
+    [
+     296,
+     1,
+     [
+      "        fs_len += sprintf(fs_buf + fs_len, \"varying vec%d vInput%d;\\n\", input_size, i + 1);"
+     ]
+    ],
+    [
+     355,
+     0,
+     [
+      "    if (opt_studio_blend) {",
+      "        // Studio 64: texel0 to texel1 by the vertex colour's alpha, times the vertex colour (vInput1: shade)",
+      "        append_line(fs_buf, &fs_len, \"vec4 sbBlend = mix(texVal0, texVal1, vInput1.a);\");",
+      "        append_str(fs_buf, &fs_len, opt_alpha ? \"vec4 texel = vec4(sbBlend.rgb * vInput1.rgb, sbBlend.a)\" : \"vec3 texel = sbBlend.rgb * vInput1.rgb\");",
+      "    } else {"
+     ]
+    ],
+    [
+     364,
+     0,
+     [
+      "    }"
+     ]
+    ],
+    [
+     458,
+     1,
+     [
+      "        prg->attrib_sizes[cnt] = input_size;"
+     ]
+    ],
     [
      588,
      0,
@@ -3365,7 +3414,7 @@
    ]
   },
   "src/pc/gfx/gfx_pc.c": {
-   "sha256": "8bca5991f8e374158fc0f07022449f06fd790d1c3b66191000b3bd704786a294",
+   "sha256": "e9dd9b4fb6fabde63a5c0ace957f21cfeaec8a97ba4d104e2070116215d978d4",
    "hunks": [
     [
      76,
@@ -3375,13 +3424,20 @@
      ]
     ],
     [
-     78,
+     77,
      0,
      [
+      "",
       "// Studio 64 area fog and light tint (studio/flow.c): every depth-tested draw",
       "extern int gStudioFogOn, gStudioTintOn;",
-      "extern float gStudioFogColor[3], gStudioFogNear, gStudioFogFar, gStudioTint[3];",
-      ""
+      "extern float gStudioFogColor[3], gStudioFogNear, gStudioFogFar, gStudioTint[3];"
+     ]
+    ],
+    [
+     149,
+     0,
+     [
+      "    bool studio_blend_cc; // Studio 64: the combine is a 2-texture blend by shade alpha (G_SETCOMBINE)"
      ]
     ],
     [
@@ -3430,9 +3486,11 @@
      ]
     ],
     [
-     613,
+     611,
      0,
      [
+      "    }",
+      "",
       "    // Studio 64: a replaced (or imported) texture, any size (src/studio/assets.c)",
       "    {",
       "        extern int studio_texture_override(const uint8_t *addr, const uint8_t **rgba, uint32_t *w, uint32_t *h);",
@@ -3443,9 +3501,7 @@
       "        if (studio_texture_override(rdp.loaded_texture[tile].addr, &orgba, &ow, &oh)) {",
       "            gfx_rapi->upload_texture(orgba, ow, oh);",
       "            return;",
-      "        }",
-      "    }",
-      ""
+      "        }"
      ]
     ],
     [
@@ -3456,6 +3512,18 @@
       "            float f = (w - gStudioFogNear) / (gStudioFogFar - gStudioFogNear);",
       "            d->studio_fog = f < 0.0f ? 0.0f : (f > 1.0f ? 1.0f : f);",
       "        }"
+     ]
+    ],
+    [
+     933,
+     0,
+     [
+      "    // Studio 64: a blended material (2-cycle: TEXEL0 to TEXEL1 by shade alpha, times shade)",
+      "    bool studio_blend = rdp.studio_blend_cc && (rdp.other_mode_h & (3U << G_MDSFT_CYCLETYPE)) == G_CYC_2CYCLE;",
+      "    if (studio_blend) {",
+      "        uint32_t f = CC_TEXEL1 | (CC_TEXEL0 << 3) | (CC_SHADE << 6) | (CC_TEXEL0 << 9);",
+      "        cc_id = f | (f << 12) | SHADER_OPT_STUDIO_BLEND;",
+      "    }"
      ]
     ],
     [
@@ -3471,9 +3539,17 @@
      ]
     ],
     [
-     965,
+     948,
+     1,
+     [
+      "    if (!use_alpha && !studio_blend) { // (a blend needs the shade alpha even when opaque)"
+     ]
+    ],
+    [
+     964,
      0,
      [
+      "    }",
       "    // Studio 64: additive glows (the blender adds the colour, weighted by the fog alpha, to the",
       "    // framebuffer: CLR_IN * A_FOG + CLR_MEM * 1), used by imported levels' neon and lamps",
       "    bool additive = use_alpha && ((rdp.other_mode_l >> 26) & 3) == G_BL_A_FOG",
@@ -3481,8 +3557,7 @@
       "    if (additive != rendering_state.additive) {",
       "        gfx_flush();",
       "        gfx_studio_set_additive(additive);",
-      "        rendering_state.additive = additive;",
-      "    }"
+      "        rendering_state.additive = additive;"
      ]
     ],
     [
@@ -3495,6 +3570,13 @@
       "            buf_vbo[buf_vbo_len++] = gStudioFogColor[2];",
       "            buf_vbo[buf_vbo_len++] = v_arr[i]->studio_fog;",
       "        } else if (use_fog) {"
+     ]
+    ],
+    [
+     1025,
+     1,
+     [
+      "            for (int k = 0; k < 1 + (use_alpha || studio_blend ? 1 : 0); k++) {"
      ]
     ],
     [
@@ -3525,11 +3607,18 @@
      ]
     ],
     [
-     1819,
+     1644,
      0,
      [
-      "}",
-      "",
+      "                // Studio 64: first cycle (TEXEL1 - TEXEL0) * SHADE_ALPHA + TEXEL0: a blended material",
+      "                rdp.studio_blend_cc = C0(20, 4) == G_CCMUX_TEXEL1 && C1(28, 4) == G_CCMUX_TEXEL0",
+      "                    && C0(15, 5) == G_CCMUX_SHADE_ALPHA && C1(15, 3) == G_CCMUX_TEXEL0;"
+     ]
+    ],
+    [
+     1821,
+     0,
+     [
       "// Studio 64 save states: the wasm memory is swapped under the renderer.",
       "// Before: let go of the shader whose attributes are enabled on the GPU now.",
       "void gfx_studio_before_load(void) {",
@@ -3548,7 +3637,9 @@
       "    gfx_rapi->set_zmode_decal(rendering_state.decal_mode);",
       "    gfx_rapi->set_use_alpha(rendering_state.alpha_blend);",
       "    gfx_rapi->set_viewport(rendering_state.viewport.x, rendering_state.viewport.y, rendering_state.viewport.width, rendering_state.viewport.height);",
-      "    gfx_rapi->set_scissor(rendering_state.scissor.x, rendering_state.scissor.y, rendering_state.scissor.width, rendering_state.scissor.height);"
+      "    gfx_rapi->set_scissor(rendering_state.scissor.x, rendering_state.scissor.y, rendering_state.scissor.width, rendering_state.scissor.height);",
+      "}",
+      ""
      ]
     ]
    ]
@@ -3803,6 +3894,21 @@
       "  CXXLIB := -lstdc++",
       "endif",
       "tabledesign_LDFLAGS := -Laudiofile -laudiofile $(CXXLIB) -lm"
+     ]
+    ]
+   ]
+  },
+  "src/pc/gfx/gfx_cc.h": {
+   "sha256": "eab76dbbdadaf1d91436afe9e289eab102ffdc101f2906600daea76a95327ba1",
+   "hunks": [
+    [
+     32,
+     0,
+     [
+      "// Studio 64: two textures blended by the vertex colour's alpha, then times the vertex colour",
+      "// (an imported model's blended material: the N64's 2-cycle (TEXEL1 - TEXEL0) * SHADE_ALPHA + TEXEL0,",
+      "// then COMBINED * SHADE). The colour formula is that; inputs carry alpha even when opaque.",
+      "#define SHADER_OPT_STUDIO_BLEND (1 << 28)"
      ]
     ]
    ]

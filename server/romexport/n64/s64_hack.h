@@ -33,7 +33,14 @@ struct S64Info {
     /*0xDF4*/ u32 sfxCount;
     /*0xDF8*/ u32 replaceRom;    // the game songs the project's songs replace (s64_songs.c): per entry sequence slot, song
     /*0xDFC*/ u32 replaceCount;
-}; // 0xE00
+    /*0xE00*/ struct S64MarioSet {
+        u16 parts;               // bit i: part i has this colour (s64_mario.c: overalls, shirt, gloves, shoes, skin, hair, cap), else the game's
+        u8 colors[7][3];         // per part r, g, b
+        u8 pad;
+    } marioSets[16];             // Mario's colours: 0 for every stage, 1..15 the sets of stages with their own
+    /*0xF80*/ u8 marioStageSet[40]; // per level number: its set (0: the one of every stage)
+    /*0xFA8*/ u8 pad[8];
+}; // 0xFB0
 
 extern struct S64Info gS64Info;
 
@@ -51,6 +58,7 @@ void s64_story_star(struct Object *o);
 void s64_story_render(void);
 void s64_warp_to(s16 level, s16 area, s16 node);
 void s64_ovl_reset(void);
+void s64_mario_colors(void);
 s32 s64_level_modules(s16 mask, s32 reg);
 
 #endif

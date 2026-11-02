@@ -5,7 +5,7 @@
 // Layout of the buffer (little endian):
 //   "S64D" u32 version
 //   u32 ntex   { u16 w, h, tileW, tileH; u8 rgba[w*h*4] }   (texture coordinates refer to tileW x tileH)
-//   u32 nmat   { s32 tex; u32 combine[2]; u32 geomode; u32 othermode[2]; u8 layer, lit, cms, cmt;
+//   u32 nmat   { s32 tex; s32 tex2 (version 4: a blended material's TEXEL1 image, else -1); u32 combine[2]; u32 geomode; u32 othermode[2]; u8 layer, lit, cms, cmt;
 //                u8 prim[4]; u8 env[4]; u16 texScaleS, texScaleT }
 //   u32 ntri   { u16 mat; u16 pad; 3 x { f32 x, y, z; f32 s, t; u8 c[4] } }
 //   u32 ncol   { s16 v[9]; s16 type; s16 force; u32 uid }
@@ -144,6 +144,7 @@ static s32 texture_index(const u8 *addr, const u8 *tlut, s32 fmt, s32 siz, s32 w
 
 struct DumpMat {
     s32 tex;
+    s32 tex2;    // a blended material (2 textures by shade alpha, assets.c): the TEXEL1 image; else -1
     u32 combine[2], geomode, othermode[2];
     u8 layer, lit, cms, cmt;
     u8 prim[4], env[4];
@@ -186,6 +187,8 @@ struct Rsp {
     s32 tileW, tileH;
     u32 texScale;
     s32 texOn;
+    s32 loadSlot;          // TMEM half the next load goes to (tmem / 256), like gfx_pc
+    const u8 *slotImg[2];  // the image last loaded into each half
     struct DumpMat mat;
     s32 curMat;    // -1: state changed since the last triangle
 };
@@ -196,8 +199,19 @@ static void rsp_tri(struct Rsp *r, s32 a, s32 b, s32 c) {
     if (a > 63 || b > 63 || c > 63) return;
     if (r->curMat < 0) {
         struct DumpMat m = r->mat;
+        u32 w0 = m.combine[0], w1 = m.combine[1];
         m.tex = (r->texOn && r->timg != NULL)
                     ? texture_index(r->timg, r->tlut, r->tileFmt, r->tileSiz, r->tileW, r->tileH) : -1;
+        m.tex2 = -1;
+        // a blended material: first cycle (TEXEL1 - TEXEL0) * SHADE_ALPHA + TEXEL0 in 2-cycle mode
+        // (assets.c emit_material): TEXEL0 is the image in TMEM's first half, TEXEL1 the second
+        if (r->texOn && r->slotImg[0] != NULL && r->slotImg[1] != NULL
+            && ((r->mat.othermode[0] >> G_MDSFT_CYCLETYPE) & 3) == (G_CYC_2CYCLE >> G_MDSFT_CYCLETYPE)
+            && ((w0 >> 20) & 15) == G_CCMUX_TEXEL1 && ((w1 >> 28) & 15) == G_CCMUX_TEXEL0
+            && ((w0 >> 15) & 31) == G_CCMUX_SHADE_ALPHA && ((w1 >> 15) & 7) == G_CCMUX_TEXEL0) {
+            m.tex = texture_index(r->slotImg[0], NULL, r->tileFmt, r->tileSiz, r->tileW, r->tileH);
+            m.tex2 = texture_index(r->slotImg[1], NULL, r->tileFmt, r->tileSiz, r->tileW, r->tileH);
+        }
         m.cms = (u8) r->cms;
         m.cmt = (u8) r->cmt;
         m.scaleS = (u16) (r->texScale >> 16);
@@ -270,7 +284,15 @@ static void walk_dl(struct Rsp *r, const Gfx *dl, s32 depth) {
             case G_LOADTLUT:
                 r->tlut = r->timg;
                 break;
+            case G_LOADBLOCK:
+            case G_LOADTILE:
+                r->slotImg[r->loadSlot] = r->timg;
+                r->curMat = -1;
+                break;
             case G_SETTILE:
+                if (((w1 >> 24) & 7) == G_TX_LOADTILE) {
+                    r->loadSlot = ((w0 & 0x1FF) / 256) & 1;
+                }
                 if (((w1 >> 24) & 7) == G_TX_RENDERTILE) {
                     r->tileFmt = (w0 >> 21) & 7;
                     r->tileSiz = (w0 >> 19) & 3;
@@ -538,7 +560,7 @@ EMSCRIPTEN_KEEPALIVE const u8 *studio_romdump(const s32 *skip, s32 nskip, const 
     }
 
     put("S64D", 4);
-    put32(3);
+    put32(4); // (4: materials carry tex2, blended materials)
     put32(sNumTex);
     for (i = 0; i < sNumTex; i++) {
         put16(sTex[i].iw);
@@ -551,6 +573,7 @@ EMSCRIPTEN_KEEPALIVE const u8 *studio_romdump(const s32 *skip, s32 nskip, const 
     for (i = 0; i < sNumMat; i++) {
         struct DumpMat *m = &sMat[i];
         put32((u32) m->tex);
+        put32((u32) m->tex2);
         put32(m->combine[0]); put32(m->combine[1]);
         put32(m->geomode);
         put32(m->othermode[0]); put32(m->othermode[1]);

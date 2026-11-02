@@ -27,6 +27,30 @@ function resample(src, sw, sh, w, h) {
   return out;
 }
 
+// A blended material's two images (texel0: its emission image, texel1: its base image): both RGBA16
+// (no palettes: a palette takes the upper half of TMEM), the same size (they share the texture
+// coordinates), 1024 texels each at most: together in the 4 KB of TMEM (tmem 0 and 256).
+// -> { w, h, bytes0, bytes1, scaleS, scaleT, alpha, fmt: 'rgba16', blend: true }
+export function toN64Pair(tex0, tex1) {
+  let w = pow2Below(tex1.w), h = pow2Below(tex1.h);
+  while (w * h > MAX_TEXELS / 2) {
+    if (w >= h) w /= 2; else h /= 2;
+  }
+  let alpha = false;
+  const enc = (tex) => {
+    const px = w === tex.w && h === tex.h ? tex.rgba : resample(tex.rgba, tex.w, tex.h, w, h);
+    const bytes = Buffer.alloc(w * h * 2);
+    for (let i = 0; i < w * h; i++) {
+      const r = px[i * 4] >> 3, g = px[i * 4 + 1] >> 3, b = px[i * 4 + 2] >> 3, a = px[i * 4 + 3] >= 128 ? 1 : 0;
+      if (!a) alpha = true;
+      bytes.writeUInt16BE((r << 11) | (g << 6) | (b << 1) | a, i * 2);
+    }
+    return bytes;
+  };
+  const bytes0 = enc(tex0), bytes1 = enc(tex1);
+  return { w, h, bytes0, bytes1, fmt: 'rgba16', blend: true, alpha, scaleS: w / (tex1.tileW || tex1.w), scaleT: h / (tex1.tileH || tex1.h) };
+}
+
 // -> { w, h, bytes (RGBA16 big endian), scaleS, scaleT (dumped texture coordinates -> texels), alpha }
 export function toN64(tex) {
   let w = pow2Below(tex.w), h = pow2Below(tex.h);

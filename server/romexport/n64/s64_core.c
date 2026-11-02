@@ -184,6 +184,7 @@ static void catalog_to_ram(void) {
 void s64_area_loaded(void) {
     struct S64AreaData *a = area_data();
     catalog_to_ram();
+    s64_mario_colors();
     s64_save_area_loaded();
     studio_flow_area_load();
     studio_story_area();

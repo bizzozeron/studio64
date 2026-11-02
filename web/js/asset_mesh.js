@@ -112,11 +112,22 @@ export async function buildPackage(scene, opts = {}) {
       quantize(rgba, texFormat, { alpha: kind });
       out.tex = { w, h, rgba, alpha: kind };
       out.srcSize = [m.image.width, m.image.height];
+      // a blended material's second image (the emission texture), at the first one's size and format:
+      // both share the uvs, and on the N64 both sit in its 4 KB of texture memory
+      if (m.image2) {
+        const rgba2 = rasterize(m.image2, w, h, { smooth: smoothTextures });
+        quantize(rgba2, texFormat, { alpha: kind });
+        out.tex2 = { w, h, rgba: rgba2 };
+      }
     }
     materials.push(out);
   }
   return { version: 1, name: scene.name, tris, pos, uv, col, nrm, mat, materials, bounds: { min, max }, format: scene.format, texFormat, texMax };
 }
+
+// A material drawn blended: two images, and the blend not turned off in its settings.
+export const blendOff = (s) => s?.blend === false && !!s?.blendUser; // (see keepMaterialMeta)
+export const isBlended = (m, s = {}) => !!(m?.tex && m?.tex2 && !blendOff(s));
 
 // Default per-material game settings for a fresh import.
 export function defaultMaterialMeta(pkg) {
@@ -124,8 +135,17 @@ export function defaultMaterialMeta(pkg) {
     const alpha = m.tex?.alpha === 'blend' || m.alphaMode === 'BLEND' || m.color[3] < 0.99 ? 'blend' : (m.tex?.alpha === 'cutout' || m.alphaMode === 'MASK') ? 'cutout' : 'opaque';
     let surface = guessSurface(m.name);
     if (alpha === 'cutout' && surface === 'normal' && /leaf|tree|plant|grass|bush/i.test(m.name)) surface = 'none';
+    // (blend: only stored once someone turns it off, blendUser; blended materials blend by default)
     return { name: m.name, surface, alpha, double: !!m.doubleSided || alpha === 'cutout', wrapS: m.wrapS || 'repeat', wrapT: m.wrapT || 'repeat', unlit: !!m.unlit };
   });
+}
+
+// A material's settings kept over a re-import: "blend off" only when someone turned it off (older
+// projects stored it off for every material that had no emission texture yet)
+export function keepMaterialMeta(keep, name) {
+  const out = { ...keep, name };
+  if (out.blend === false && !out.blendUser) delete out.blend;
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -147,6 +167,10 @@ export async function encodePackage(pkg) {
       const png = new Uint8Array(await (await toPNGBlob(m.tex.rgba, m.tex.w, m.tex.h)).arrayBuffer());
       add(`tex${i}`, png);
       hm.tex = { chunk: `tex${i}`, w: m.tex.w, h: m.tex.h, alpha: m.tex.alpha };
+      if (m.tex2) {
+        add(`tex${i}b`, new Uint8Array(await (await toPNGBlob(m.tex2.rgba, m.tex2.w, m.tex2.h)).arrayBuffer()));
+        hm.tex2 = { chunk: `tex${i}b`, w: m.tex2.w, h: m.tex2.h };
+      }
     }
     header.materials.push(hm);
   }
@@ -179,6 +203,10 @@ export async function decodePackage(bytes) {
     if (m.tex) {
       const img = await blobToRGBA(new Blob([chunk(m.tex.chunk)], { type: 'image/png' }));
       out.tex = { w: img.w, h: img.h, rgba: img.rgba, alpha: m.tex.alpha };
+    }
+    if (m.tex2) {
+      const img = await blobToRGBA(new Blob([chunk(m.tex2.chunk)], { type: 'image/png' }));
+      out.tex2 = { w: img.w, h: img.h, rgba: img.rgba };
     }
     pkg.materials.push(out);
   }
@@ -217,6 +245,16 @@ export function uploadPackage(engine, slot, pkg, meta = {}) {
     engineMat.push(M._studio_model_material(slot, ptr, m.tex ? m.tex.w : 0, m.tex ? m.tex.h : 0, flags));
     if (ptr) M._free(ptr);
   }
+  // blended materials: their second image (the vertex colours' alpha blends to it; an engine
+  // without studio_model_material_b draws the first image only)
+  const blended = pkg.materials.map((m, i) => isBlended(m, mm[i]) && !!M._studio_model_material_b);
+  for (const [i, m] of pkg.materials.entries()) {
+    if (!blended[i] || engineMat[i] < 0) continue;
+    const p2 = M._malloc(m.tex2.rgba.length);
+    M.HEAPU8.set(m.tex2.rgba, p2);
+    if (!M._studio_model_material_b(slot, engineMat[i], p2, m.tex2.w, m.tex2.h)) blended[i] = false;
+    M._free(p2);
+  }
   // triangles per material
   const byMat = new Map();
   for (let t = 0; t < pkg.tris; t++) {
@@ -239,7 +277,8 @@ export function uploadPackage(engine, slot, pkg, meta = {}) {
         const sh = flat ? 1 : shadeOf(pkg.nrm[pi] / 127, pkg.nrm[pi + 1] / 127, pkg.nrm[pi + 2] / 127);
         const ci = t * 12 + j * 4;
         buf[o++] = Math.min(255, pkg.col[ci] * sh); buf[o++] = Math.min(255, pkg.col[ci + 1] * sh); buf[o++] = Math.min(255, pkg.col[ci + 2] * sh);
-        buf[o++] = s.alpha === 'blend' ? pkg.col[ci + 3] : 255;
+        // (a blended material: the alpha is the blend between its two images)
+        buf[o++] = s.alpha === 'blend' || blended[k] ? pkg.col[ci + 3] : 255;
       }
     }
     const ptr = M._malloc(buf.byteLength);

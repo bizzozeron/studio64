@@ -83,6 +83,19 @@ export const gfx = {
     gfx.setTile(s, IM_FMT_RGBA, IM_SIZ_16b, ((w * 2) + 7) >> 3, 0, TX_RENDERTILE, 0, cmt, maskt, 0, cms, masks, 0);
     s.u32(0xF2000000).u32((TX_RENDERTILE << 24) | (((w - 1) << 2) << 12) | ((h - 1) << 2));
   },
+  // gsDPLoadMultiBlock for an RGBA16 w x h texture into TMEM at tmem (64-bit words), drawn by tile rtile
+  // (a blended material's second texture: tmem 256, tile 1)
+  loadMultiBlock16(s, name, tmem, rtile, w, h, cms, cmt, masks, maskt) {
+    const words = Math.max(1, (w * 2) / 8);
+    const dxt = Math.floor(((1 << 11) + words - 1) / words);
+    s.u32(0xFD000000 | (IM_FMT_RGBA << 21) | (IM_SIZ_16b << 19)).ref(name);
+    gfx.setTile(s, IM_FMT_RGBA, IM_SIZ_16b, 0, tmem, TX_LOADTILE, 0, cmt, maskt, 0, cms, masks, 0);
+    gfx.loadSync(s);
+    s.u32(0xF3000000).u32((TX_LOADTILE << 24) | (Math.min(w * h - 1, TX_LDBLK_MAX_TXL) << 12) | (dxt & 0xFFF));
+    gfx.pipeSync(s);
+    gfx.setTile(s, IM_FMT_RGBA, IM_SIZ_16b, ((w * 2) + 7) >> 3, tmem, rtile, 0, cmt, maskt, 0, cms, masks, 0);
+    s.u32(0xF2000000).u32(((rtile & 7) << 24) | (((w - 1) << 2) << 12) | ((h - 1) << 2));
+  },
   // gsDPLoadTextureBlock(_4b) for a CI8 or CI4 w x h texture
   loadTextureBlockCI(s, name, w, h, bits, cms, cmt, masks, maskt) {
     const words = bits === 8 ? Math.max(1, w / 8) : Math.max(1, w / 16);
@@ -124,6 +137,7 @@ export const RENDER_MODES = [
   [0x00443078, 0x00113078], [0x004049D8, 0x001049D8], [0x00404DD8, 0x00104DD8], [0x004045D8, 0x001045D8],
 ];
 export const RM_FOG_SHADE_A = 0xC8000000;
+export const RM_PASS = 0x0C080000; // G_RM_PASS: the first cycle of a 2-cycle render mode that only passes the colour on
 
 // Vtx: position, flag, texture coordinates, colour (or normal)
 export function vtx(s, x, y, z, ts, tt, c) {

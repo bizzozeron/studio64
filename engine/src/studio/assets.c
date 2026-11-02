@@ -192,6 +192,8 @@ enum { MAT_OPAQUE = 0, MAT_CUTOUT = 1, MAT_BLEND = 2 };
 
 struct AssetMat {
     u8 *tex;     // RGBA32 image, also registered as a texture override
+    u8 *tex2;    // a blended material's second image (FBX: the Emission Color texture): where the
+                 // vertex colour's alpha is 0 it shows, at 1 the first (studio_model_material_b)
     s32 flags;   // ASSET_MAT_*
     f32 *verts;  // triangles: 3 * VERT_FLOATS per triangle
     s32 ntri, cap;
@@ -265,6 +267,16 @@ static void model_free_buffers(struct AssetModel *m) {
                 }
             }
             free(mat->tex);
+        }
+        if (mat->tex2 != NULL) {
+            studio_tex_unset(mat->tex2, FALSE);
+            for (k = 0; k < sOwnedCount; k++) {
+                if (sOwned[k] == mat->tex2) {
+                    sOwned[k] = sOwned[--sOwnedCount];
+                    break;
+                }
+            }
+            free(mat->tex2);
         }
     }
     free(m->col);
@@ -383,6 +395,28 @@ EMSCRIPTEN_KEEPALIVE s32 studio_model_material(s32 id, const u8 *rgba, s32 w, s3
     return m->nmats++;
 }
 
+// A blended material: its second image (w*h RGBA32), after studio_model_material and before the
+// triangles. The vertex colours' alpha then blends between the two (1: the first image, 0: this one),
+// and the colour multiplies the result, like Ocarina of Time's terrain: the N64's 2-cycle combine
+// (TEXEL1 - TEXEL0) * SHADE_ALPHA + TEXEL0, then COMBINED * SHADE (gfx_pc.c draws it).
+EMSCRIPTEN_KEEPALIVE s32 studio_model_material_b(s32 id, s32 matIndex, const u8 *rgba, s32 w, s32 h) {
+    struct AssetModel *m = model_by_id(id);
+    struct AssetMat *mat;
+    if (m == NULL || matIndex < 0 || matIndex >= m->nmats || rgba == NULL || w <= 0 || h <= 0 || w > 1024 || h > 1024) {
+        return 0;
+    }
+    mat = &m->mats[matIndex];
+    if (mat->tex == NULL || mat->tex2 != NULL) {
+        return 0; // (a blend needs the first image; one second image)
+    }
+    mat->tex2 = calloc(1, 2048);
+    own_texture(mat->tex2);
+    studio_tex_set(mat->tex2, rgba, w, h, FALSE);
+    m->bytes += 2048 + w * h * 4;
+    sAssetBytes += 2048 + w * h * 4;
+    return 1;
+}
+
 // Triangles of material `mat`: 3 vertices of x y z u v r g b a (uv 0..1 per repeat, colours 0..255).
 EMSCRIPTEN_KEEPALIVE s32 studio_model_tris(s32 id, s32 matIndex, const f32 *v, s32 ntri) {
     struct AssetModel *m = model_by_id(id);
@@ -457,7 +491,18 @@ static Gfx *emit_material(Gfx *g, Vtx *vtx, s32 *vi, struct AssetMat *mat) {
 
     mat->v0 = *vi;
     gDPPipeSync(g++);
-    if (mat->tex != NULL) {
+    if (mat->tex != NULL && mat->tex2 != NULL) {
+        // blended: TEXEL0 = the second image (tmem 0), TEXEL1 = the first (tmem 256: 2 KB each,
+        // the 4 KB of texture memory); by the shade alpha from TEXEL0 to TEXEL1, then times the shade
+        gDPSetCycleType(g++, G_CYC_2CYCLE);
+        gDPSetCombineLERP(g++, TEXEL1, TEXEL0, SHADE_ALPHA, TEXEL0, TEXEL1, TEXEL0, SHADE, TEXEL0,
+                          COMBINED, 0, SHADE, 0, 0, 0, 0, COMBINED);
+        gSPTexture(g++, 0xFFFF, 0xFFFF, 0, G_TX_RENDERTILE, G_ON);
+        gDPLoadTextureBlock(g++, mat->tex2, G_IM_FMT_RGBA, G_IM_SIZ_16b, 32, 32, 0, cmsMode, cmtMode, 5, 5,
+                            G_TX_NOLOD, G_TX_NOLOD);
+        gDPLoadMultiBlock(g++, mat->tex, 256, 1, G_IM_FMT_RGBA, G_IM_SIZ_16b, 32, 32, 0, cmsMode, cmtMode, 5, 5,
+                          G_TX_NOLOD, G_TX_NOLOD);
+    } else if (mat->tex != NULL) {
         if (layer == MAT_OPAQUE) {
             gDPSetCombineMode(g++, G_CC_MODULATERGB, G_CC_MODULATERGB);
         } else {
@@ -513,6 +558,10 @@ static Gfx *emit_material(Gfx *g, Vtx *vtx, s32 *vi, struct AssetMat *mat) {
             gSP1Triangle(g++, k * 3, k * 3 + 1, k * 3 + 2, 0);
         }
         *vi += n * 3;
+    }
+    if (mat->tex != NULL && mat->tex2 != NULL) {
+        gDPPipeSync(g++);
+        gDPSetCycleType(g++, G_CYC_1CYCLE); // (what everything else drawn expects)
     }
     return g;
 }
@@ -659,7 +708,7 @@ EMSCRIPTEN_KEEPALIVE s32 studio_model_end(s32 id) {
         struct AssetMat *mat = &m->mats[i];
         s32 k;
         total += mat->ntri;
-        cmds += 24 + (mat->ntri / 10 + 1) * 7;
+        cmds += 24 + (mat->ntri / 10 + 1) * 7 + (mat->tex2 != NULL ? 16 : 0); // (a blend: 2-cycle, a second load)
         for (k = 0; k < mat->ntri * 3; k++) {
             const f32 *p = mat->verts + k * VERT_FLOATS;
             s32 a;

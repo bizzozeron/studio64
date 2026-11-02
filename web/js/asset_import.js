@@ -24,10 +24,58 @@ async function bitmapFrom(blobOrFile) {
   } catch {
     // some formats (TGA) need a decoder of our own
     const buf = new Uint8Array(await blobOrFile.arrayBuffer());
-    const tga = decodeTGA(buf);
-    if (tga) return createImageBitmap(new ImageData(tga.rgba, tga.w, tga.h));
+    const img = decodeTGA(buf) || decodePSD(buf);
+    if (img) return createImageBitmap(new ImageData(img.rgba, img.w, img.h));
     return null;
   }
+}
+
+// Photoshop files (.psd / .psb): their flattened picture (the composite Photoshop keeps after the layers,
+// "Maximize compatibility"), 8 or 16 bits, RGB or greyscale, raw or RLE.
+function decodePSD(b) {
+  if (b.length < 26 || b[0] !== 0x38 || b[1] !== 0x42 || b[2] !== 0x50 || b[3] !== 0x53) return null; // "8BPS"
+  const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  const psb = dv.getUint16(4) === 2;
+  const channels = dv.getUint16(12), h = dv.getUint32(14), w = dv.getUint32(18), depth = dv.getUint16(22), mode = dv.getUint16(24);
+  if (![8, 16].includes(depth) || ![1, 3].includes(mode) || !w || !h || w * h > 16384 * 16384) return null;
+  let p = 26;
+  p += 4 + dv.getUint32(p);                                            // colour mode data
+  p += 4 + dv.getUint32(p);                                            // image resources
+  p += psb ? 8 + Number(dv.getBigUint64(p)) : 4 + dv.getUint32(p);     // layers and masks
+  if (p + 2 > b.length) return null;
+  const compression = dv.getUint16(p); p += 2;
+  const bpc = depth / 8, rowBytes = w * bpc, planes = [];
+  const used = Math.min(channels, mode === 3 ? 4 : 2);                 // colour (+ alpha)
+  if (compression === 0) {
+    for (let c = 0; c < used; c++) { planes.push(b.subarray(p, p + rowBytes * h)); p += rowBytes * h; }
+  } else if (compression === 1) {
+    const counts = [];
+    for (let i = 0; i < channels * h; i++) { counts.push(psb ? dv.getUint32(p) : dv.getUint16(p)); p += psb ? 4 : 2; }
+    for (let c = 0; c < channels; c++) {
+      const plane = c < used ? new Uint8Array(rowBytes * h) : null;
+      for (let y = 0; y < h; y++) {
+        const end = p + counts[c * h + y];
+        let o = y * rowBytes;
+        while (p < end) {
+          const n = b[p++];
+          if (n < 128) { if (plane) plane.set(b.subarray(p, p + n + 1), o); o += n + 1; p += n + 1; }
+          else if (n > 128) { const v = b[p++]; if (plane) plane.fill(v, o, o + 257 - n); o += 257 - n; }
+        }
+        p = end;
+      }
+      if (plane) planes.push(plane);
+    }
+  } else return null;
+  if (planes.length < used || planes.some((q) => q.length < rowBytes * h)) return null;
+  const rgba = new Uint8ClampedArray(w * h * 4);
+  const alpha = used === (mode === 3 ? 4 : 2);
+  const at = (q, i) => q[i * bpc]; // (16 bits: the high byte)
+  for (let i = 0; i < w * h; i++) {
+    if (mode === 3) { rgba[i * 4] = at(planes[0], i); rgba[i * 4 + 1] = at(planes[1], i); rgba[i * 4 + 2] = at(planes[2], i); }
+    else rgba[i * 4] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = at(planes[0], i);
+    rgba[i * 4 + 3] = alpha ? at(planes[used - 1], i) : 255;
+  }
+  return { w, h, rgba };
 }
 
 // Uncompressed and RLE TGA (common in older OBJ/FBX packs).
@@ -59,7 +107,9 @@ function decodeTGA(b) {
   return { rgba, w, h };
 }
 
-const newMaterial = (name, extra = {}) => ({ name: name || 'material', color: [1, 1, 1, 1], image: null, imageName: null, alphaMode: 'OPAQUE', alphaCutoff: 0.5, doubleSided: false, wrapS: 'repeat', wrapT: 'repeat', ...extra });
+// image2: a blended material's second image (the emission texture: FBX EmissiveColor, glTF emissiveTexture,
+// OBJ map_Ke), shown where the vertex colour's alpha is 0 (asset_mesh.js, engine assets.c)
+const newMaterial = (name, extra = {}) => ({ name: name || 'material', color: [1, 1, 1, 1], image: null, imageName: null, image2: null, image2Name: null, alphaMode: 'OPAQUE', alphaCutoff: 0.5, doubleSided: false, wrapS: 'repeat', wrapT: 'repeat', ...extra });
 
 // ---------------------------------------------------------------------------
 // OBJ + MTL
@@ -79,6 +129,7 @@ function parseMTL(text) {
     else if (k === 'tr') cur.color[3] = 1 - Number(rest[0]);
     else if (k === 'map_kd') cur.imageName = rest.filter((x, i) => !(x.startsWith('-') || (i > 0 && rest[i - 1].startsWith('-')))).pop() || rest.pop();
     else if (k === 'map_d') cur.alphaMapName = rest.pop();
+    else if (k === 'map_ke') cur.image2Name = rest.filter((x, i) => !(x.startsWith('-') || (i > 0 && rest[i - 1].startsWith('-')))).pop() || rest.pop();
   }
   for (const m of mats.values()) if (m.color[3] < 0.999) m.alphaMode = 'BLEND';
   return mats;
@@ -149,6 +200,11 @@ async function importOBJ(file, files) {
       const f = idx.get(baseName(m.imageName));
       if (f) m.image = await bitmapFrom(f);
       else warnings.push(`Texture ${m.imageName} (material ${m.name}) was not dropped with the model.`);
+    }
+    if (m.image2Name) {
+      const f = idx.get(baseName(m.image2Name));
+      if (f) m.image2 = await bitmapFrom(f);
+      else warnings.push(`Emission texture ${m.image2Name} (material ${m.name}) was not dropped with the model.`);
     }
   }
   const out = [];
@@ -296,9 +352,12 @@ async function importGLTF(file, files) {
     const samp = t?.sampler !== undefined ? json.samplers?.[t.sampler] : null;
     const src = t ? (t.source ?? t.extensions?.EXT_texture_webp?.source ?? t.extensions?.KHR_texture_basisu?.source) : undefined;
     const unlit = !!m.extensions?.KHR_materials_unlit;
+    const et = m.emissiveTexture?.index !== undefined ? json.textures?.[m.emissiveTexture.index] : null;
+    const esrc = et ? (et.source ?? et.extensions?.EXT_texture_webp?.source) : undefined;
     return newMaterial(m.name || `material ${i + 1}`, {
       color: pbr.baseColorFactor ? [...pbr.baseColorFactor] : [1, 1, 1, 1],
       image: src !== undefined ? images[src] : null,
+      image2: esrc !== undefined ? images[esrc] : null,
       alphaMode: m.alphaMode || 'OPAQUE', alphaCutoff: m.alphaCutoff ?? 0.5, doubleSided: !!m.doubleSided,
       wrapS: WRAP[samp?.wrapS] || 'repeat', wrapT: WRAP[samp?.wrapT] || 'repeat', unlit,
     });
@@ -491,7 +550,21 @@ async function importFBX(file, files) {
       if (content instanceof Uint8Array && content.length > 16) m.image = await bitmapFrom(new Blob([content]));
       else if (idx.get(baseName(fname))) m.image = await bitmapFrom(idx.get(baseName(fname)));
       else if (fname) warnings.push(`Texture ${baseName(fname)} was not dropped with the model.`);
+      if (!m.image && ((content instanceof Uint8Array && content.length > 16) || idx.get(baseName(fname)))) warnings.push(`Texture ${baseName(fname)} (material ${m.name}) could not be read: save it as PNG, JPG, TGA or PSD (with Maximize compatibility).`);
       m.imageName = baseName(fname);
+    }
+    // a second image for blended materials: the Emission Color texture (Blender: Image Texture into
+    // the Principled BSDF's Emission Color; its strength may be 0)
+    const tex2 = (childrenOf.get(mo.props[0]) || []).filter((c) => /^Emissive(Color)?$/i.test(c.prop || '')).map((c) => byId.get(c.from)).find((o) => o?.name === 'Texture');
+    if (tex2 && tex2 !== tex) {
+      const fname = child(tex2, 'RelativeFilename')?.props[0] || child(tex2, 'FileName')?.props[0] || '';
+      const video = kids(tex2.props[0], 'Video')[0];
+      const content = video && child(video, 'Content')?.props[0];
+      if (content instanceof Uint8Array && content.length > 16) m.image2 = await bitmapFrom(new Blob([content]));
+      else if (idx.get(baseName(fname))) m.image2 = await bitmapFrom(idx.get(baseName(fname)));
+      else if (fname) warnings.push(`Emission texture ${baseName(fname)} was not dropped with the model.`);
+      if (!m.image2 && ((content instanceof Uint8Array && content.length > 16) || idx.get(baseName(fname)))) warnings.push(`Emission texture ${baseName(fname)} (material ${m.name}) could not be read: save it as PNG, JPG, TGA or PSD (with Maximize compatibility).`);
+      m.image2Name = baseName(fname);
     }
     matCache.set(mo.props[0], m);
     return m;

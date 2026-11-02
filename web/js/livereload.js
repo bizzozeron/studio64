@@ -14,7 +14,7 @@
 // Every reload is one undo step ("Live reload: castle.fbx").
 
 import { importModel } from './asset_import.js';
-import { buildPackage, encodePackage, defaultMaterialMeta } from './asset_mesh.js';
+import { buildPackage, encodePackage, defaultMaterialMeta, keepMaterialMeta } from './asset_mesh.js';
 import { thumbnail } from './asset_preview.js';
 import { rasterize, quantize, pow2 } from './texcodec.js';
 
@@ -374,7 +374,7 @@ export class LiveReload {
     const old = meta.materials || [];
     const materials = pkg.materials.map((m, i) => {
       const keep = old.find((o) => o.name === m.name) || (old.length === pkg.materials.length ? old[i] : null);
-      return keep ? { ...keep, name: m.name } : fresh[i];
+      return keep ? keepMaterialMeta(keep, m.name) : fresh[i];
     });
     const bytes = await encodePackage(pkg);
     const file = await A.upload(new Blob([bytes]), 'model', meta.name);

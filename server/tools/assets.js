@@ -76,8 +76,9 @@ export default ({ tool, z, card, rpc: rpc20, commit, text, where, opts, agent })
     area: z.enum(['here', 'all']).optional(),
   }, card('clear_skybox', () => 'Restoring the sky', async (a) => ({ summary: 'Sky restored', result: text(await rpc('sky_clear', a)) })), opts),
 
-  tool('set_mario_colors', 'Change Mario\'s colours for this project: a preset (mario, luigi, wario, waluigi, fire, ice, classic, gold, shadow, builder, doctor, pink) and/or single parts as #rrggbb (overalls, shirt, gloves, shoes, skin, hair, cap).', {
+  tool('set_mario_colors', 'Change Mario\'s colours for this project: a preset (mario, luigi, wario, waluigi, fire, ice, classic, gold, shadow, builder, doctor, pink) and/or single parts as #rrggbb (overalls, shirt, gloves, shoes, skin, hair, cap). stage: "all" (default: every stage without colours of its own) or "here" (only the stage Mario is in; exported ROMs set them when he enters it).', {
     preset: z.string().optional(),
+    stage: z.enum(['all', 'here']).optional(),
     colors: z.object({
       overalls: z.string().optional(), shirt: z.string().optional(), gloves: z.string().optional(), shoes: z.string().optional(),
       skin: z.string().optional(), hair: z.string().optional(), cap: z.string().optional(),

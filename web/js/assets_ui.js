@@ -4,7 +4,7 @@
 
 import { Assets, ANIM_NAMES, MARIO_PARTS, MARIO_PRESETS } from './assets.js';
 import { importModel, isModelFile } from './asset_import.js';
-import { buildPackage, encodePackage, decodePackage, defaultMaterialMeta, SURFACE_NAMES } from './asset_mesh.js';
+import { buildPackage, encodePackage, decodePackage, defaultMaterialMeta, keepMaterialMeta, blendOff, SURFACE_NAMES } from './asset_mesh.js';
 import { ModelPreview, thumbnail } from './asset_preview.js';
 import { openPixelEditor } from './pixel_editor.js';
 import { askConfirm, askText, askChoice } from './dialogs.js';
@@ -59,6 +59,7 @@ export class AssetsUI {
         clearTimeout(this.matTimer);
         this.matTimer = setTimeout(() => { try { editorUI.buildBlocks(); editorUI.buildTerrain(); } catch (err) { console.error(err); } }, 100);
       }
+      if (what === 'area') { if (this.isOpen() && this.tab === 'mario') this.render(what); return; }
       if (this.isOpen()) this.render(what);
     });
     live?.on((what) => {
@@ -434,7 +435,7 @@ export class AssetsUI {
         const p = await buildPackage(scene, { scale: o.scale, rotate: o.rotate, zUp: o.zUp, origin: o.origin, texMax: o.texMax, texFormat: o.texFormat });
         if (my !== building) return;
         const fresh = defaultMaterialMeta(p);
-        mats = mats ? fresh.map((d, i) => ({ ...d, ...(mats[i] || {}) })) : fresh;
+        mats = mats ? fresh.map((d, i) => keepMaterialMeta({ ...d, ...(mats[i] || {}) }, d.name)) : fresh;
         pkg = p;
         pv.setPackage(pkg, { materials: mats, lighting: o.lighting });
         info();
@@ -563,12 +564,14 @@ export class AssetsUI {
         <label class="as-mini"><input type="checkbox" data-m="double" ${s.double ? 'checked' : ''}> 2-sided</label>
         ${m.tex ? `<select data-m="wrapS" title="Horizontal texture repeat"><option value="repeat">↔ Repeat</option><option value="mirror">↔ Mirror</option><option value="clamp">↔ Clamp</option></select>
         <select data-m="wrapT" title="Vertical texture repeat"><option value="repeat">↕ Repeat</option><option value="mirror">↕ Mirror</option><option value="clamp">↕ Clamp</option></select>` : ''}
+        ${m.tex && m.tex2 ? `<label class="as-mini as-blend" title="Blended material: its emission texture shows where the vertex colours' alpha is 0, this texture where it is 1 (paint alpha in Blender), then the vertex colours multiply it"><input type="checkbox" data-m="blend" ${blendOff(s) ? '' : 'checked'}> Blend <span class="as-mat-sw2" style="background-image:url(${toDataURL(m.tex2.rgba, m.tex2.w, m.tex2.h)})"></span></label>` : ''}
       </div></div>`;
     row.querySelector('[data-m=alpha]').value = s.alpha;
     if (m.tex) { row.querySelector('[data-m=wrapS]').value = s.wrapS || 'repeat'; row.querySelector('[data-m=wrapT]').value = s.wrapT || 'repeat'; }
     row.querySelectorAll('[data-m]').forEach((inp) => {
       inp.onchange = () => {
         s[inp.dataset.m] = inp.type === 'checkbox' ? inp.checked : inp.value;
+        if (inp.dataset.m === 'blend') s.blendUser = true;
         if (inp.dataset.m === 'surface' && inp.value === 'water' && s.alpha === 'opaque') { s.alpha = 'blend'; row.querySelector('[data-m=alpha]').value = 'blend'; }
         onChange();
       };
@@ -1026,38 +1029,69 @@ export class AssetsUI {
   // ---- Mario tab -------------------------------------------------------------------------
 
   renderMario(body) {
-    const cur = { ...(this.assets.meta.mario?.colors || {}) };
-    const def = this.assets.marioDefaults();
-    body.innerHTML = `<div class="as-presets big">${Object.entries(MARIO_PRESETS).map(([k, p]) => {
+    const A = this.assets;
+    const own = A.marioOwn();
+    // which colours this tab edits: all stages, or this stage's own (the stage starts out with the default)
+    const scope = (this.marioScope || (own ? 'here' : 'all')) === 'here' ? 'here' : 'all';
+    const editing = scope === 'here' ? own : (A.meta.mario || {});
+    const cur = { ...(editing?.colors || {}) };
+    const def = A.marioDefaults();
+    const ownCount = Object.keys(A.meta.mario?.levels || {}).length;
+    const scopeHtml = `<div class="as-row as-mscope"><span>Colours for</span>
+        <div class="seg"><button class="seg-btn ${scope === 'all' ? 'active' : ''}" data-scope="all">All stages</button><button class="seg-btn ${scope === 'here' ? 'active' : ''}" data-scope="here">This stage${own ? ' ●' : ''}</button></div></div>
+      <div class="as-tip">${scope === 'all'
+        ? `Every stage without colours of its own${ownCount ? ` (${ownCount} stage${ownCount > 1 ? 's have' : ' has'} their own)` : ''}. Exported ROMs set them as Mario enters a stage.`
+        : own ? 'This stage has its own colours: Mario wears them whenever he enters it, also in the exported ROM.' : 'This stage uses the colours of all stages.'}</div>`;
+    if (scope === 'here' && !own) {
+      body.innerHTML = `${scopeHtml}<div class="as-row"><button class="btn sm primary" data-a="own">${ic(ICON.sparkles || ICON.reset)}Give this stage its own colours</button></div>`;
+      body.querySelector('[data-a=own]').onclick = () => this.busy(null, async () => { await A.setMario(A.marioColorsFor(), A.meta.mario?.preset || null, 'here'); this.renderMario(body); });
+      this.wireMarioScope(body);
+      return;
+    }
+    body.innerHTML = `${scopeHtml}<div class="as-presets big">${Object.entries(MARIO_PRESETS).map(([k, p]) => {
       const c = { ...def, ...p.colors };
-      return `<button class="as-preset ${this.assets.meta.mario?.preset === k ? 'active' : ''}" data-preset="${k}"><span class="as-preset-sw"><i style="background:${c.cap}"></i><i style="background:${c.overalls}"></i><i style="background:${c.skin}"></i></span>${esc(p.name)}</button>`;
+      return `<button class="as-preset ${editing?.preset === k ? 'active' : ''}" data-preset="${k}"><span class="as-preset-sw"><i style="background:${c.cap}"></i><i style="background:${c.overalls}"></i><i style="background:${c.skin}"></i></span>${esc(p.name)}</button>`;
     }).join('')}</div>
       <div class="as-parts"></div>
-      <div class="as-row"><label class="as-toggle"><input type="checkbox" data-a="look" ${this.looking ? 'checked' : ''}> ${ic(ICON.camera)} Look at Mario</label><span class="spacer"></span><button class="btn sm ghost" data-a="reset">${ic(ICON.reset)}All back to Mario</button></div>
+      <div class="as-row"><label class="as-toggle"><input type="checkbox" data-a="look" ${this.looking ? 'checked' : ''}> ${ic(ICON.camera)} Look at Mario</label><span class="spacer"></span>${scope === 'here' ? `<button class="btn sm ghost" data-a="unown">${ic(ICON.reset)}Use the default here</button>` : ''}<button class="btn sm ghost" data-a="reset">${ic(ICON.reset)}All back to Mario</button></div>
       <div class="as-tip">Colours change live and are saved in the project.<span data-ai> Claude can do it too: “make Mario look like Luigi”.</span></div>`;
     const parts = body.querySelector('.as-parts');
+    // (editing the default while this stage has its own colours: Mario keeps showing this stage's)
+    const live = scope === 'here' || !own;
     let timer = null;
     const commit = (preset = null) => {
-      this.assets.applyMario(cur);
+      if (live) A.applyMario(cur);
       clearTimeout(timer);
-      timer = setTimeout(() => this.assets.setMario(cur, preset).catch((err) => this.toast(err.message, 'x')), 350);
+      timer = setTimeout(() => A.setMario(cur, preset, scope).catch((err) => this.toast(err.message, 'x')), 350);
     };
     for (const [k, label] of MARIO_PARTS) {
       const row = el('label', 'as-part');
       row.innerHTML = `<input type="color" value="${cur[k] || def[k]}"><span>${esc(label)}</span>${cur[k] ? `<button class="btn sm ghost" title="Back to Mario's">${ic(ICON.reset)}</button>` : ''}`;
       row.querySelector('input').oninput = (e) => { cur[k] = e.target.value; commit(); };
       row.querySelector('input').onchange = () => this.renderMario(body);
-      row.querySelector('button')?.addEventListener('click', (e) => { e.preventDefault(); delete cur[k]; commit(); this.assets.meta.mario = { colors: cur }; this.renderMario(body); });
+      row.querySelector('button')?.addEventListener('click', (e) => {
+        e.preventDefault();
+        delete cur[k];
+        clearTimeout(timer);
+        this.busy(null, async () => { await A.setMario(cur, null, scope); this.renderMario(body); });
+      });
       parts.appendChild(row);
     }
     body.querySelectorAll('[data-preset]').forEach((b) => {
-      b.onclick = () => this.busy(null, async () => { await this.assets.setMario({ ...MARIO_PRESETS[b.dataset.preset].colors }, b.dataset.preset); this.renderMario(body); });
+      b.onclick = () => this.busy(null, async () => { await A.setMario({ ...MARIO_PRESETS[b.dataset.preset].colors }, b.dataset.preset, scope); this.renderMario(body); });
     });
-    body.querySelector('[data-a=reset]').onclick = () => this.busy(null, async () => { await this.assets.setMario({}, 'mario'); this.renderMario(body); });
+    body.querySelector('[data-a=reset]').onclick = () => this.busy(null, async () => { await A.setMario({}, 'mario', scope); this.renderMario(body); });
+    body.querySelector('[data-a=unown]')?.addEventListener('click', () => this.busy(null, async () => { await A.clearMarioHere(); this.renderMario(body); }));
     body.querySelector('[data-a=look]').onchange = (e) => this.lookAtMario(e.target.checked);
+    this.wireMarioScope(body);
   }
 
-  // A turntable close-up of Mario while his colours are edited.
+  wireMarioScope(body) {
+    body.querySelectorAll('[data-scope]').forEach((b) => {
+      b.onclick = () => { this.marioScope = b.dataset.scope; this.renderMario(body); };
+    });
+  }
+
   lookAtMario(on) {
     if (on === !!this.looking) return;
     const e = this.engine;

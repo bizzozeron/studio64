@@ -248,3 +248,7 @@
 .as-lp-item:hover { background: var(--panel-3); }
 .as-lp-item span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .as-lp-item small { color: var(--faint); }
+
+/* blended materials (two textures by vertex alpha): the emission texture's swatch */
+.as-blend { display: inline-flex; align-items: center; gap: 4px; }
+.as-mat-sw2 { display: inline-block; width: 16px; height: 16px; border-radius: 4px; background-size: cover; image-rendering: pixelated; border: 1px solid var(--border-2); vertical-align: middle; }

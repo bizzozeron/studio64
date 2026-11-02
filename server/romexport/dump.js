@@ -12,7 +12,7 @@ export function parseDump(buf) {
   const f32 = () => { const v = b.readFloatLE(o); o += 4; return v; };
 
   const version = u32();
-  if (version !== 2 && version !== 3) throw new Error(`unknown dump version ${version}`);
+  if (version < 2 || version > 4) throw new Error(`unknown dump version ${version}`);
 
   const textures = [];
   for (let n = u32(), i = 0; i < n; i++) {
@@ -24,7 +24,8 @@ export function parseDump(buf) {
 
   const materials = [];
   for (let n = u32(), i = 0; i < n; i++) {
-    const m = { tex: i32(), combine: [u32(), u32()], geomode: u32(), othermode: [u32(), u32()] };
+    // tex2 (version 4): a blended material's second image (TEXEL1; two textures by vertex alpha), else -1
+    const m = { tex: i32(), tex2: version >= 4 ? i32() : -1, combine: [u32(), u32()], geomode: u32(), othermode: [u32(), u32()] };
     m.layer = u8(); m.lit = u8(); m.cms = u8(); m.cmt = u8();
     m.prim = [u8(), u8(), u8(), u8()];
     m.env = [u8(), u8(), u8(), u8()];

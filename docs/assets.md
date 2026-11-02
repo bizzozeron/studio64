@@ -51,6 +51,39 @@ grow the memory (`studio_assets_mem()` counts it). The area's light (World tab �
 direction, colour, ambient) shades imported models and blocks as well as the terrain; models set
 to *flat* light keep their colours.
 
+### Blended materials (two textures by vertex alpha)
+
+Like Ocarina of Time's terrain: a material can carry **two textures** that blend by the **vertex
+colours' alpha**, with the vertex colours then multiplying the result as usual. In Blender:
+
+- **Base Color**: an Image Texture plugged straight into the Principled BSDF's Base Color (as usual).
+- **Emission Color**: the second Image Texture plugged straight into Emission Color, with Emission
+  Strength 0 so it does not glow in Blender. (Straight in: through a Mix node the FBX exporter drops it.)
+- **Paint the Color Attribute's alpha**: 1 (unpainted) shows the Base Color, 0 shows the Emission
+  texture, in between mixes them.
+
+Studio 64 turns every material with an Emission Color texture (FBX `EmissiveColor`, glTF
+`emissiveTexture`, OBJ `map_Ke`) into a blended one; its row in the model's Settings shows a **Blend**
+switch with the second texture's swatch (off: the Base Color only). The second texture is made the
+same size and format as the first (they share the uvs). The import preview shows the first texture only.
+
+How: the engine draws it with the N64's 2-cycle combine `(TEXEL1 - TEXEL0) * SHADE_ALPHA + TEXEL0`,
+then `COMBINED * SHADE` (`assets.c` emit_material: the emission texture in TMEM's first half, the base
+in the second), and the PC renderer recognises that combine and draws it with a shader of its own
+(`gfx_pc.c` / `gfx_opengl.c`, `SHADER_OPT_STUDIO_BLEND`, patched by engine-upstream/changes.json).
+**ROM exports**: both textures RGBA16, at most 1024 texels each (32×32, or 64×16 ...: together the
+N64's 4 KB of texture memory).
+
+**Fog in ROMs**: on the N64 the fog writes its amount into the vertex alpha, the blend's input. So in
+an area with fog, the export draws opaque and cut-out blended materials **twice**: first the blend
+itself with the fog turned off (the vertex alpha reaches the blend), then the same triangles again in
+1-cycle mode with the fog on, painting only the fog colour over them by the fog amount (render mode
+`FOG_COLOR × SHADE_ALPHA + MEMORY × (1 − SHADE_ALPHA)`, z compared without writing, `ZMODE_OPA` so the
+redraw at equal depth always lands). Cut-outs also alpha-test the base texture there, so their holes
+aren't fogged twice. A pixel the second draw misses just stays unfogged, never black. The cost: those
+triangles draw twice (the vertices are stored once). See-through blended materials can't be redrawn
+and draw without fog (the export says how many).
+
 ## Game textures
 
 The **Textures** tab lists all ~1,200 textures of the game (levels, objects, Mario, HUD, effects),
@@ -88,6 +121,16 @@ candy, space). Skies show in levels with a skybox (outdoor levels and custom lev
 The **Mario** tab colours overalls, shirt & arms, gloves, shoes, skin, hair and cap (the cap is
 split from the shirt), with presets (Luigi, Wario, Waluigi, Fire, Ice, Classic NES, Gold, Shadow,
 Builder, Doctor, Pink). *Look at Mario* turns the camera around him while you choose.
+
+**Colours for**: *All stages* edits the colours every stage uses; *This stage* gives the stage Mario
+is in a set of its own (Give this stage its own colours copies the default to start from; Use the
+default here removes it). A stage is a level with all its areas. Stored as `assets.mario.colors` and
+`assets.mario.levels["<level number>" | "c:<custom level id>"] = { colors, preset }`.
+
+**In exported ROMs** (`n64/s64_mario.c`): the info block holds set 0 (every stage) and up to 15 stage
+sets, plus each level number's set. Whenever an area loads, the ROM finds Mario's light groups through
+his display lists (as the studio does, the cap and the gloves split off) and sets that stage's colours;
+parts a set leaves alone go back to the game's.
 
 ## Live reload (the assets folder)
 

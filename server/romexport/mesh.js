@@ -1,14 +1,22 @@
 // Turns the dumped triangles of an area into N64 display lists: split into chunks (each one a
 // translate node with a render range, so chunks behind the camera are skipped), vertices welded per
 // material and loaded in batches that fit F3DEX2's vertex buffer.
-import { toN64, log2 } from './textures.js';
-import { gfx, vtx, geo, G, RENDER_MODES, RM_FOG_SHADE_A } from './n64.js';
+import { toN64, toN64Pair, log2 } from './textures.js';
+import { gfx, vtx, geo, G, RENDER_MODES, RM_FOG_SHADE_A, RM_PASS } from './n64.js';
 
 const CHUNK = 2048;
 const BATCH = 30;            // vertices per gsSPVertex (F3DEX2 holds 32)
 const DRAW_DISTANCE = 32000;
 const MAX_CHUNKS = 160;
 const LAYER_OPAQUE = 1;
+// A blended material in fog, drawn twice (see buildMesh): first the blend without fog (the shade
+// alpha is the vertex alpha then), then the same triangles again in 1-cycle with G_FOG on, only
+// painting the fog colour over what is there: FOG_COLOR * SHADE_A + MEMORY * (1 - SHADE_A), z compared
+// (ZMODE_OPA: equal depth passes, so the redraw always lands; no z write, coverage kept). Pixels the
+// second draw can't reach just stay unfogged, never black (the decal test of an additive pass failed
+// at grazing angles on hardware and left black seams along the edges).
+const RM_FOG_OVERLAY = 0xFA504350; // GBL_c1+c2(G_BL_CLR_FOG, G_BL_A_SHADE, G_BL_CLR_MEM, G_BL_1MA) | FORCE_BL | CVG_DST_SAVE | IM_RD | Z_CMP
+const CC_TEX_ALPHA = [0xFCFFFFFF, 0xFFFE7339]; // colour: shade (unused), alpha: TEXEL0 (cut-outs: the alpha test)
 const CLEARED = G.CULL_FRONT | G.CULL_BACK | G.LIGHTING | G.TEXTURE_GEN | G.TEXTURE_GEN_LINEAR;
 
 // Writes the area's textures, vertices and display lists into seg (labels start with prefix).
@@ -18,13 +26,31 @@ const CLEARED = G.CULL_FRONT | G.CULL_BACK | G.LIGHTING | G.TEXTURE_GEN | G.TEXT
 // multipliers for the vertex colours
 export function buildMesh(seg, dump, prefix, lights, { single = false, fog = null, tint = null } = {}) {
   const tex = dump.textures.map((t) => toN64(t));
-  const stats = { tris: 0, verts: 0, chunks: 0, textures: tex.length, bytes: 0 };
+  const stats = { tris: 0, verts: 0, chunks: 0, textures: tex.length, bytes: 0, blended: 0, blendedInFog: 0, blendedTwoPass: 0 };
   const start = seg.n;
 
+  // blended materials in fog: the blend without fog, then a fog overlay (on the N64 the fog takes the
+  // vertex alpha the blend needs; translucent layers, which the overlay can't do, draw without fog)
+  const twoPass = (m) => !!fog && m.tex >= 0 && m.tex2 >= 0 && !m.lit && m.layer < 5;
+  // (textures only blended materials draw go in as their pairs below, not on their own)
+  const single1 = new Set(dump.materials.filter((m) => m.tex >= 0 && !(m.tex2 >= 0)).map((m) => m.tex));
   tex.forEach((t, i) => {
+    if (!single1.has(i)) return;
     seg.align(8).label(`${prefix}_tex${i}`).bytes(t.bytes);
     if (t.palette) seg.align(8).label(`${prefix}_tex${i}_pal`).bytes(t.palette);
   });
+  // blended materials (two textures by the vertex colours' alpha): their pairs, both in TMEM at once
+  const pairs = new Map(); // "tex,tex2" -> { ...toN64Pair, name }
+  for (const m of dump.materials) {
+    if (!(m.tex >= 0 && m.tex2 >= 0)) continue;
+    const key = `${m.tex},${m.tex2}`;
+    if (pairs.has(key)) continue;
+    const p = { ...toN64Pair(dump.textures[m.tex], dump.textures[m.tex2]), name: `${prefix}_bl${pairs.size}` };
+    seg.align(8).label(`${p.name}_0`).bytes(p.bytes0);
+    seg.align(8).label(`${p.name}_1`).bytes(p.bytes1);
+    pairs.set(key, p);
+  }
+  const pairOf = (m) => (m.tex >= 0 && m.tex2 >= 0 ? pairs.get(`${m.tex},${m.tex2}`) : null);
 
   // chunks by triangle centroid (bigger ones in big levels: each chunk costs a matrix every frame)
   let chunks;
@@ -67,11 +93,9 @@ export function buildMesh(seg, dump, prefix, lights, { single = false, fog = nul
     for (const [layer, mats] of byLayer) {
       // vertices first (each material's batches), then the display list that draws them
       const draws = [];
-      for (const [mi, mtris] of mats) {
-        const m = dump.materials[mi];
-        const t = m.tex >= 0 ? tex[m.tex] : null;
-        const vname = `${cname}_m${mi}_v`;
-        // the material's vertices (welded), its triangles as vertex ids, then batches that share them
+      // one draw: the material's vertices (welded), its triangles as vertex ids, then batches that share
+      // them. overlay: drawn again as a fog overlay (blended materials in fog)
+      const makeDraw = (mtris, m, t, texName, vname, overlay = false) => {
         const ids = new Map(), unique = [], tri3 = [];
         for (const tri of mtris) {
           const idx = triVerts(tri, m, t, ox, oy, oz, m.lit ? null : tint).map((v) => {
@@ -90,7 +114,15 @@ export function buildMesh(seg, dump, prefix, lights, { single = false, fog = nul
         seg.align(16).label(vname);
         for (const v of verts) vtx(seg, v.x, v.y, v.z, v.s, v.t, v.c);
         stats.verts += verts.length;
-        draws.push({ m, t, texName: t ? `${prefix}_tex${m.tex}` : null, vname, batches });
+        return { m, t, texName, vname, batches, overlay };
+      };
+      for (const [mi, mtris] of mats) {
+        const m = dump.materials[mi];
+        const pair = pairOf(m);
+        const t = pair || (m.tex >= 0 ? tex[m.tex] : null);
+        const overlay = !!pair && twoPass(m);
+        if (overlay) stats.blendedTwoPass++;
+        draws.push(makeDraw(mtris, m, t, pair ? pair.name : t ? `${prefix}_tex${m.tex}` : null, `${cname}_m${mi}_v`, overlay));
       }
 
       const dlName = `${cname}_l${layer}`;
@@ -105,14 +137,59 @@ export function buildMesh(seg, dump, prefix, lights, { single = false, fog = nul
         gfx.fogColor(seg, fog.color);
         gfx.fogPosition(seg, fog.min, fog.max);
       }
-      for (const d of draws) {
-        material(seg, d.m, d.t, d.texName, lights, !!fog);
+      const drawBatches = (d) => {
         for (const b of d.batches) {
           gfx.vertex(seg, d.vname, b.start, b.n, 0);
           for (let i = 0; i < b.tris.length; i += 2) {
             const a = b.tris[i], c = b.tris[i + 1];
             if (c) gfx.tri2(seg, a[0], a[1], a[2], c[0], c[1], c[2]);
             else gfx.tri1(seg, a[0], a[1], a[2]);
+          }
+        }
+      };
+      for (const d of draws) {
+        const blend = !!d.t?.blend;
+        if (blend) {
+          // in fog with the overlay: the blend itself without fog (G_FOG off: shade alpha = vertex alpha)
+          blendMaterial(seg, d.m, d.t, d.texName, rm, !!fog && !d.overlay);
+          stats.blended++;
+          if (fog && !d.overlay) stats.blendedInFog++;
+        } else {
+          material(seg, d.m, d.t, d.texName, lights, !!fog);
+        }
+        drawBatches(d);
+        if (d.overlay) {
+          // the same triangles again: the fog colour over them by the fog amount (vertices reloaded with
+          // G_FOG on, so the RSP puts the fog in the shade alpha). Cut-outs: only where the base texture
+          // is solid (alpha test), so the holes don't get fogged twice
+          const cut = layer === 4;
+          gfx.pipeSync(seg);
+          gfx.cycleType(seg, false);
+          gfx.renderMode(seg, RM_FOG_OVERLAY, 0);
+          gfx.geometryMode(seg, 0, G.FOG);
+          if (cut) {
+            gfx.raw(seg, ...CC_TEX_ALPHA);
+            gfx.loadTextureBlock16(seg, `${d.texName}_1`, d.t.w, d.t.h, d.m.cms, d.m.cmt, log2(d.t.w), log2(d.t.h));
+            gfx.texture(seg, 0xFFFF, 0xFFFF, 0, 0, 1);
+            gfx.raw(seg, 0xF9000000, 0x80); // blend colour alpha: the alpha test's threshold
+            gfx.raw(seg, 0xE2001E01, 1);    // G_AC_THRESHOLD
+          } else {
+            gfx.combineShade(seg);
+            gfx.texture(seg, 0xFFFF, 0xFFFF, 0, 0, 0);
+          }
+          drawBatches(d);
+          if (cut) { gfx.pipeSync(seg); gfx.raw(seg, 0xE2001E01, 0); } // G_AC_NONE
+        }
+        if (blend) {
+          // back to the layer's mode: fog's 2-cycle one, or 1-cycle
+          gfx.pipeSync(seg);
+          if (fog) {
+            gfx.cycleType(seg, true);
+            gfx.renderMode(seg, RM_FOG_SHADE_A, rm[1]);
+            gfx.geometryMode(seg, 0, G.FOG);
+          } else {
+            gfx.cycleType(seg, false);
+            gfx.renderMode(seg, rm[0], rm[1]);
           }
         }
       }
@@ -196,6 +273,24 @@ export function batchTriangles(tris, max) {
   return out;
 }
 
+// A blended material (assets.c emit_material): 2-cycle, (TEXEL1 - TEXEL0) * SHADE_ALPHA + TEXEL0 then
+// times the shade (its combine as dumped), texel0 = the emission image at tmem 0, texel1 = the base
+// image at tmem 256. The shade alpha is the blend, so no fog on it: with G_FOG the RSP writes the fog
+// amount into the shade alpha (on the N64 a blended material and fog exclude each other).
+function blendMaterial(seg, m, t, texName, rm, fog) {
+  gfx.pipeSync(seg);
+  gfx.cycleType(seg, true);
+  gfx.renderMode(seg, RM_PASS, rm[1]);
+  gfx.raw(seg, m.combine[0], m.combine[1]);
+  gfx.geometryMode(seg, CLEARED | G.FOG, (m.geomode & CLEARED & ~G.LIGHTING) | (fog ? G.FOG : 0));
+  gfx.primColor(seg, 0, 0, m.prim);
+  gfx.envColor(seg, m.env);
+  gfx.textureLut(seg, false);
+  gfx.loadTextureBlock16(seg, `${texName}_0`, t.w, t.h, m.cms, m.cmt, log2(t.w), log2(t.h));
+  gfx.loadMultiBlock16(seg, `${texName}_1`, 256, 1, t.w, t.h, m.cms, m.cmt, log2(t.w), log2(t.h));
+  gfx.texture(seg, 0xFFFF, 0xFFFF, 0, 0, 1);
+}
+
 function material(seg, m, t, texName, lights, twoCycle) {
   gfx.pipeSync(seg);
   if (twoCycle) gfx.raw(seg, ...pass2(m.combine));
@@ -243,7 +338,7 @@ export function fogOf(f, near = 100, far = 32000) {
 
 // The three vertices of a triangle in chunk space, with texture coordinates moved near 0 (the
 // N64 keeps them in 10.5 fixed point) and scaled to the converted texture.
-function triVerts(tri, m, t, ox, oy, oz, tint) {
+function triVerts(tri, m, t, ox, oy, oz, tint, cmap = null) {
   const sS = t ? t.scaleS * (m.scaleS / 0x10000 || 1) : 1, sT = t ? t.scaleT * (m.scaleT / 0x10000 || 1) : 1;
   let s = tri.v.map((v) => v.s * sS), tt = tri.v.map((v) => v.t * sT);
   if (t) {
@@ -254,6 +349,7 @@ function triVerts(tri, m, t, ox, oy, oz, tint) {
   return tri.v.map((v, i) => {
     const o = { x: c16(v.x - ox), y: c16(v.y - oy), z: c16(v.z - oz), s: c16(s[i] * 32), t: c16(tt[i] * 32) };
     o.c = tint ? v.c.map((c, k) => (k < 3 ? Math.min(255, Math.round(c * tint[k])) : c)) : v.c; // colours, or the normal's signed bytes when lit
+    if (cmap) o.c = cmap(o.c);
     o.key = `${o.x},${o.y},${o.z},${o.s},${o.t},${o.c.join(',')}`;
     return o;
   });
