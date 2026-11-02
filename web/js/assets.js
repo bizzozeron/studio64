@@ -293,6 +293,21 @@ export class Assets {
         if (k && !this._markerNames.has(k)) this._markerNames.set(k, e);
       }
     }
+    // stars by number: Star1, Star_1, Star 1, Star.001, Star_2.B ... = star 1, 2 ... of the level;
+    // and named with an asterisk: Bobby's_Big_Whatever*Star1, Star.001*Iggy_Big_Mart (the other side,
+    // underscores as spaces, is the star's name)
+    const raw = String(name || '').trim();
+    const starRe = /^star(?:[\s_-]*(\d+)(?:\..*)?|\.(\d+))?$/i;
+    const parts = raw.includes('*') ? raw.split('*') : [raw];
+    const at = parts.findIndex((p) => starRe.test(p.trim()) || /^star\.[a-z]$/i.test(p.trim()));
+    if (at >= 0) {
+      const star = this.engine.catalog?.entries.find((x) => x.id === 'star');
+      const sm = starRe.exec(parts[at].trim());
+      const num = sm ? Number(sm[1] ?? sm[2] ?? 0) : 0;
+      // (Blender's own ending on the title side: ".001", ".B")
+      const title = parts.filter((_, i) => i !== at).join(' ').replace(/\.(\d+|[A-Za-z])$/, '').replace(/_/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60);
+      if (star && (num >= 1 || title)) return { ...star, ...(num >= 1 ? { starNum: Math.min(num, 32) } : {}), ...(title ? { starName: title } : {}) };
+    }
     let n = String(name || '');
     for (let guard = 0; n && guard < 8; guard++) {
       if (markerKey(n) === 'mario_default_start') return { id: START_ENTRY, name: 'Mario Default Start' }; // (editor.js: the area's start)
@@ -352,6 +367,10 @@ export class Assets {
         x: Math.round(place.x + x * c + z * sn), y: Math.round(place.y + mk.y * k), z: Math.round(place.z - x * sn + z * c),
         yaw: ((mk.yaw | 0) + (place.yaw | 0)) & 0xffff, pitch: 0, roll: 0, bparams: bparams || 0, scale: 1, name: e.name,
         fbx: { model: m.id, from: uid, node: mk.node },
+        // a numbered star (Star_3): that star of the level (bparams byte 0 = number - 1), a studio star
+        ...(mk.star ? { bparams: ((((mk.star - 1) & 0xff) << 24) | ((bparams || 0) & 0x00ffffff)) >>> 0, star: { name: `Star ${mk.star}` }, name: `Star ${mk.star}` } : {}),
+        // its name from the file (Title*Star2)
+        ...(mk.starName ? { star: { name: mk.starName }, name: mk.starName } : {}),
       };
     }).filter(Boolean);
     if (recs.length) {

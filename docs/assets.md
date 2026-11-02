@@ -67,6 +67,13 @@ saved again (live reload) or re-imported, the objects the file made before are r
 current ones are placed: the file decides where they are, so moving one in the studio lasts until the
 next reload, which puts every one (and Mario's start) back where the file has it. Objects you add by hand are never touched. FBX only for now.
 
+Stars can carry their number: `Star1`, `Star_1`, `Star 1`, `Star.001`, `Star_2.B`, `STAR_6` (any case)
+become star 1, 2, ... 6 of the level (bparams byte 0 = number - 1; the 7th is the 100-coin star's
+slot), as studio stars named "Star N" (their names show in the ROM's act list). A plain `Star` or
+`Star.B` is a star with the library's default number. With an asterisk the other side names the star
+(underscores as spaces, Blender's ending dropped): `Bobby's_Big_Whatever*Star1`,
+`Luigi's_Holiday*Star.001`, `Star.001*Iggy_Big_Mart`, `Title*Star` (no number: the default one).
+
 A node named `Mario_Default_Start` is not an object: it moves the area's start (where Mario begins
 the area, `settings.spawn`) to its spot and facing. In build mode the start shows as the ferris wheel axle (half size),
 *Mario Default Start*, first in the Objects library (Popular): select it, drag or turn it, or place it

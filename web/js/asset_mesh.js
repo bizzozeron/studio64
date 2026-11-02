@@ -133,7 +133,7 @@ export async function buildPackage(scene, opts = {}) {
   const markers = [...marked.values()].map(({ node, entry }) => {
     const p = turn(node.pos.map((v) => v * scale)), f = turn(node.front);
     const yaw = Math.hypot(f[0], f[2]) > 1e-6 ? Math.round((Math.atan2(f[0], f[2]) / (2 * Math.PI)) * 65536) & 0xffff : 0;
-    return { node: node.name, entry: entry.id, x: Math.round(p[0] - off[0]), y: Math.round(p[1] - off[1]), z: Math.round(p[2] - off[2]), yaw };
+    return { node: node.name, entry: entry.id, ...(entry.starNum ? { star: entry.starNum } : {}), ...(entry.starName ? { starName: entry.starName } : {}), x: Math.round(p[0] - off[0]), y: Math.round(p[1] - off[1]), z: Math.round(p[2] - off[2]), yaw };
   }).sort((a, b) => a.node.localeCompare(b.node));
   return { version: 1, name: scene.name, tris, pos, uv, col, nrm, mat, materials, bounds: { min, max }, format: scene.format, texFormat, texMax, markers };
 }
