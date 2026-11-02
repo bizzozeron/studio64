@@ -51,6 +51,30 @@ grow the memory (`studio_assets_mem()` counts it). The area's light (World tab �
 direction, colour, ambient) shades imported models and blocks as well as the terrain; models set
 to *flat* light keep their colours.
 
+### Transparency from the file
+
+Whatever is plugged into the Principled BSDF's **Alpha** in Blender (FBX: the transparency texture)
+becomes texture A's alpha: the image's alpha channel, or its brightness when it has none. With nothing
+else said, that makes the material a **cut-out** (on or off per texel).
+
+A rule in the **material's name** says which alpha counts and how: `MATERIAL*INDEX*KEYWORD*INDEX*KEYWORD`
+(any case, underscores ignored). INDEX: `A` (the base colour's texture, or what's in Alpha), `B` (the
+emission texture of a blended material), `AB` (both, mixed by the vertex alpha like the colours).
+KEYWORD: `Trans` / `Transparent` / `Transparency` = smooth, `Cutout` / `Cut` / `Clip` = cut-out,
+`Ignore` or none = that alpha doesn't count. E.g. `Glass*A*Trans`, `Fence*A*Cutout`,
+`Bush*A*Trans*B*Cutout`, `Leaves*AB*Clip`, `Water*A*Ignore*B*Trans`. `*Double` or `*DoubleSided` anywhere after the name
+makes the material double-sided (both faces drawn; a live reload keeps it on). How the vertex colours are applied (texture T, vertex colour S; the game multiplies): `*Multiply`,
+`*Screen` (T + S − TS), `*Add` / `*LinearDodge` (T + S), `*Subtract` (T − S), `*LinearBurn` (T + S − 1),
+`*Average` ((T + S) / 2); also the material row's *Colours* menu. One N64 combiner step each (white
+env colour as 1, grey prim colour as ½): the studio (gfx_pc reads a blended material's second cycle
+back, SHADER_STUDIO_VC_SHIFT) and ROMs draw them the same. Photoshop's other modes (darken, overlay,
+dodge/burn, difference, hue...) need min/max, conditions or division, which the N64 combiner can't do. The name before
+the first `*` is the material's. The rule is baked into the textures' alpha (asset_mesh.js
+applyAlphaRule; "A only" gives B A's alpha and the other way round), so the game and ROMs need nothing
+new, and a live reload applies it again (it overrides the material's transparency setting). RGBA16
+textures (the default, and every blended pair) have one bit of alpha: "smooth" draws in the
+see-through layer but its edges are still on/off; IA8 keeps 16 levels (greyscale).
+
 ### Game objects in the model file
 
 A node of an FBX file (an empty, or any object) named like an object of the game, as the Objects
@@ -111,6 +135,21 @@ redraw at equal depth always lands). Cut-outs also alpha-test the base texture t
 aren't fogged twice. A pixel the second draw misses just stays unfogged, never black. The cost: those
 triangles draw twice (the vertices are stored once). See-through blended materials can't be redrawn
 and draw without fog (the export says how many).
+
+## Exporting a stage (Collada)
+
+World tab → **Export the stage**: the level you're in (this area, or every area) as a .zip with a
+Collada file (.dae) and its textures (PNG). Each area is loaded fresh, then read the way the ROM export
+reads it (`studio_romdump`, blocks and placed models baked in): one mesh per area, welded by position,
+uvs and vertex colours (RGBA; lit materials white) per corner, a material per texture (a blended
+material: its base as diffuse, its second texture as emission, as the importer reads them back). All
+areas share the stage's origin; Blender's Z up (game x, -z, y), 1 unit = 1 game unit.
+
+The objects (the level's own and the project's, not what objects spawn) are empties at their home spot
+facing their way (their -Y = the game's yaw 0), named for the importer: `Koopa_Shell`, `Koopa_Shell.001`,
+`Star_3` / `Its_Name*Star_3`, and `Mario_Default_Start` at the area's start. Their behavior parameters
+(a box's contents) aren't carried; objects that share a library name come back as the first of them.
+web/js/stage_export.js.
 
 ## Game textures
 

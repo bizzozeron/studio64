@@ -3,7 +3,7 @@
 // custom block/terrain materials, custom skies and Mario's colours.
 
 import { Assets, ANIM_NAMES, MARIO_PARTS, MARIO_PRESETS } from './assets.js';
-import { importModel, isModelFile } from './asset_import.js';
+import { importModel, isModelFile, VC_MODES, VC_MODE_NAMES } from './asset_import.js';
 import { buildPackage, encodePackage, decodePackage, defaultMaterialMeta, keepMaterialMeta, blendOff, SURFACE_NAMES } from './asset_mesh.js';
 import { ModelPreview, thumbnail } from './asset_preview.js';
 import { openPixelEditor } from './pixel_editor.js';
@@ -562,6 +562,7 @@ export class AssetsUI {
         <select data-m="surface" title="Surface: how Mario reacts">${Object.entries(SURFACE_NAMES).map(([k, v]) => `<option value="${k}" ${k === s.surface ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select>
         <select data-m="alpha" title="Transparency"><option value="opaque">Solid</option><option value="cutout">Cut-out (leaves, fences)</option><option value="blend">See-through (glass, water)</option></select>
         <label class="as-mini"><input type="checkbox" data-m="double" ${s.double ? 'checked' : ''}> 2-sided</label>
+        <select data-m="vc" title="How the vertex colours are applied to the texture (the game multiplies). Material name: *Screen, *Add, *Subtract, *LinearBurn, *Average">${VC_MODES.map((k) => `<option value="${k}" ${(s.vc || 'multiply') === k ? 'selected' : ''}>Colours: ${esc(VC_MODE_NAMES[k])}</option>`).join('')}</select>
         ${m.tex ? `<select data-m="wrapS" title="Horizontal texture repeat"><option value="repeat">↔ Repeat</option><option value="mirror">↔ Mirror</option><option value="clamp">↔ Clamp</option></select>
         <select data-m="wrapT" title="Vertical texture repeat"><option value="repeat">↕ Repeat</option><option value="mirror">↕ Mirror</option><option value="clamp">↕ Clamp</option></select>` : ''}
         ${m.tex && m.tex2 ? `<label class="as-mini as-blend" title="Blended material: its emission texture shows where the vertex colours' alpha is 0, this texture where it is 1 (paint alpha in Blender), then the vertex colours multiply it"><input type="checkbox" data-m="blend" ${blendOff(s) ? '' : 'checked'}> Blend <span class="as-mat-sw2" style="background-image:url(${toDataURL(m.tex2.rgba, m.tex2.w, m.tex2.h)})"></span></label>` : ''}

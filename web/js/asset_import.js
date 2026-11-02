@@ -78,6 +78,34 @@ function decodePSD(b) {
   return { w, h, rgba };
 }
 
+// The transparency rule in a material's name: MATERIAL*INDEX*KEYWORD*INDEX*KEYWORD..., any case,
+// underscores ignored. INDEX: A (the base colour's texture, or what's plugged into Alpha), B (the
+// emission texture), AB (both). KEYWORD: Trans / Transparent / Transparency = smooth; Cutout / Cut /
+// Clip = cut-out (on or off); Ignore, or no keyword = that alpha doesn't count.
+// e.g. Glass*A*Trans, Fence*A*Cutout, Bush*A*Trans*B*Cutout, Leaves*AB*Clip.
+// -> { a, b }: null | 'smooth' | 'cutout' each, or null when the name has no rule
+// how a material applies its vertex colours (engine assets.c studio_model_material_vc; the N64's
+// colour combiner can do these in one step): texture T, vertex colour S
+export const VC_MODES = ['multiply', 'screen', 'add', 'subtract', 'linearburn', 'average'];
+export const VC_MODE_NAMES = { multiply: 'Multiply (T × S)', screen: 'Screen', add: 'Add (linear dodge)', subtract: 'Subtract (T − S)', linearburn: 'Linear burn (T + S − 1)', average: 'Average' };
+const VC_MODE_WORDS = { multiply: 'multiply', screen: 'screen', add: 'add', lineardodge: 'add', dodge: 'add', subtract: 'subtract', sub: 'subtract', linearburn: 'linearburn', burn: 'linearburn', average: 'average', avg: 'average' };
+const ALPHA_WORDS = { trans: 'smooth', transparent: 'smooth', transparency: 'smooth', cutout: 'cutout', cut: 'cutout', clip: 'cutout', ignore: null };
+export function alphaRuleOf(name) {
+  const tokens = String(name || '').split('*').slice(1).map((t) => t.trim().toLowerCase().replace(/[\s_-]+/g, '').replace(/\.\d+$/, ''));
+  let a, b, any = false;
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t !== 'a' && t !== 'b' && t !== 'ab') continue;
+    const next = tokens[i + 1];
+    const mode = next !== undefined && next in ALPHA_WORDS ? ALPHA_WORDS[next] : null;
+    if (next !== undefined && next in ALPHA_WORDS) i++;
+    if (t === 'a' || t === 'ab') a = mode;
+    if (t === 'b' || t === 'ab') b = mode;
+    any = true;
+  }
+  return any ? { a: a ?? null, b: b ?? null } : null;
+}
+
 // Uncompressed and RLE TGA (common in older OBJ/FBX packs).
 function decodeTGA(b) {
   if (b.length < 18) return null;
@@ -535,7 +563,18 @@ async function importFBX(file, files) {
   const materialOf = async (mo) => {
     if (matCache.has(mo.props[0])) return matCache.get(mo.props[0]);
     const p = props70(mo);
-    const m = newMaterial(String(mo.props[1]).split('\0')[0] || 'material');
+    // a name like "Leaves*TransparentA" or "Glass*A*Cutout*B": the transparency rule (alphaRule), the
+    // name before the first * is the material's
+    const rawName = String(mo.props[1]).split('\0')[0] || 'material';
+    const m = newMaterial(rawName.split('*')[0].trim() || 'material');
+    m.alphaRule = alphaRuleOf(rawName);
+    // *Double / *DoubleSided anywhere after the name: both faces drawn (no back-face culling)
+    if (rawName.split('*').slice(1).some((t) => /^double(sided)?$/i.test(t.trim().replace(/[\s_-]+/g, '').replace(/\.\d+$/, '')))) { m.doubleSided = true; m.doubleFromName = true; }
+    // *Screen, *Add ...: how the vertex colours are applied (VC_MODES); the game multiplies
+    for (const t of rawName.split('*').slice(1)) {
+      const k = VC_MODE_WORDS[t.trim().toLowerCase().replace(/[\s_-]+/g, '').replace(/\.\d+$/, '')];
+      if (k) m.vcMode = k;
+    }
     const dc = p.DiffuseColor || p.Diffuse;
     if (dc) m.color = [dc[0], dc[1], dc[2], 1];
     if (p.Opacity) m.color[3] = p.Opacity[0];
@@ -565,6 +604,21 @@ async function importFBX(file, files) {
       else if (fname) warnings.push(`Emission texture ${baseName(fname)} was not dropped with the model.`);
       if (!m.image2 && ((content instanceof Uint8Array && content.length > 16) || idx.get(baseName(fname)))) warnings.push(`Emission texture ${baseName(fname)} (material ${m.name}) could not be read: save it as PNG, JPG, TGA or PSD (with Maximize compatibility).`);
       m.image2Name = baseName(fname);
+    }
+    // whatever is plugged into the Principled BSDF's Alpha (Blender writes it as the transparency
+    // texture): texture A's alpha (its alpha channel, or its brightness when it has none); with no rule
+    // in the name that makes the material a cut-out
+    const texA = (childrenOf.get(mo.props[0]) || []).filter((c) => /^(TransparencyFactor|TransparentColor|Opacity)$/i.test(c.prop || '')).map((c) => byId.get(c.from)).find((o) => o?.name === 'Texture');
+    if (texA) {
+      const fname = child(texA, 'RelativeFilename')?.props[0] || child(texA, 'FileName')?.props[0] || '';
+      const video = kids(texA.props[0], 'Video')[0];
+      const content = video && child(video, 'Content')?.props[0];
+      if (content instanceof Uint8Array && content.length > 16) m.alphaImage = await bitmapFrom(new Blob([content]));
+      else if (idx.get(baseName(fname))) m.alphaImage = await bitmapFrom(idx.get(baseName(fname)));
+      else if (fname) warnings.push(`Alpha texture ${baseName(fname)} (material ${m.name}) was not dropped with the model.`);
+      if (m.alphaImage && !m.alphaRule) m.alphaRule = { a: 'cutout', b: null };
+      if (m.alphaImage && m.color[3] < 0.999) m.color[3] = 1; // (the texture is the transparency, not a factor)
+      if (m.alphaImage) m.alphaMode = 'OPAQUE';
     }
     matCache.set(mo.props[0], m);
     return m;

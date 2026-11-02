@@ -111,18 +111,19 @@ export async function buildPackage(scene, opts = {}) {
   const materials = [];
   for (const [i, m] of scene.materials.entries()) {
     const used = mat.includes(i);
-    const out = { name: m.name, color: m.color, alphaMode: m.alphaMode, doubleSided: m.doubleSided, wrapS: m.wrapS, wrapT: m.wrapT, unlit: !!m.unlit, used };
+    const out = { name: m.name, color: m.color, alphaMode: m.alphaMode, doubleSided: m.doubleSided, doubleFromName: !!m.doubleFromName, vcMode: m.vcMode || null, wrapS: m.wrapS, wrapT: m.wrapT, unlit: !!m.unlit, used };
     if (m.image && used) {
       const w = pow2(m.image.width, texMax), h = pow2(m.image.height, texMax);
       const rgba = rasterize(m.image, w, h, { smooth: smoothTextures });
-      const kind = m.alphaMode === 'BLEND' ? 'blend' : m.alphaMode === 'MASK' ? 'cutout' : alphaKind(rgba);
+      // a blended material's second image (the emission texture), at the first one's size and format:
+      // both share the uvs, and on the N64 both sit in its 4 KB of texture memory
+      const rgba2 = m.image2 ? rasterize(m.image2, w, h, { smooth: smoothTextures }) : null;
+      let kind = m.alphaMode === 'BLEND' ? 'blend' : m.alphaMode === 'MASK' ? 'cutout' : alphaKind(rgba);
+      if (m.alphaRule) { kind = applyAlphaRule(m, rgba, rgba2, w, h, smoothTextures); out.alphaRuled = kind; out.alphaMode = kind === 'blend' ? 'BLEND' : kind === 'cutout' ? 'MASK' : 'OPAQUE'; }
       quantize(rgba, texFormat, { alpha: kind });
       out.tex = { w, h, rgba, alpha: kind };
       out.srcSize = [m.image.width, m.image.height];
-      // a blended material's second image (the emission texture), at the first one's size and format:
-      // both share the uvs, and on the N64 both sit in its 4 KB of texture memory
-      if (m.image2) {
-        const rgba2 = rasterize(m.image2, w, h, { smooth: smoothTextures });
+      if (rgba2) {
         quantize(rgba2, texFormat, { alpha: kind });
         out.tex2 = { w, h, rgba: rgba2 };
       }
@@ -138,6 +139,9 @@ export async function buildPackage(scene, opts = {}) {
   return { version: 1, name: scene.name, tris, pos, uv, col, nrm, mat, materials, bounds: { min, max }, format: scene.format, texFormat, texMax, markers };
 }
 
+// the engine's vertex colour modes, in its order (asset_import.js VC_MODES)
+const VC_ORDER = ['multiply', 'screen', 'add', 'subtract', 'linearburn', 'average'];
+
 // A material drawn blended: two images, and the blend not turned off in its settings.
 export const blendOff = (s) => s?.blend === false && !!s?.blendUser; // (see keepMaterialMeta)
 export const isBlended = (m, s = {}) => !!(m?.tex && m?.tex2 && !blendOff(s));
@@ -149,7 +153,7 @@ export function defaultMaterialMeta(pkg) {
     let surface = guessSurface(m.name);
     if (alpha === 'cutout' && surface === 'normal' && /leaf|tree|plant|grass|bush/i.test(m.name)) surface = 'none';
     // (blend: only stored once someone turns it off, blendUser; blended materials blend by default)
-    return { name: m.name, surface, alpha, double: !!m.doubleSided || alpha === 'cutout', wrapS: m.wrapS || 'repeat', wrapT: m.wrapT || 'repeat', unlit: !!m.unlit };
+    return { name: m.name, surface, alpha, double: !!m.doubleSided || alpha === 'cutout', wrapS: m.wrapS || 'repeat', wrapT: m.wrapT || 'repeat', unlit: !!m.unlit, ...(m.vcMode && m.vcMode !== 'multiply' ? { vc: m.vcMode } : {}) };
   });
 }
 
@@ -159,6 +163,34 @@ export function keepMaterialMeta(keep, name) {
   const out = { ...keep, name };
   if (out.blend === false && !out.blendUser) delete out.blend;
   return out;
+}
+
+// A material's transparency rule (asset_import.js alphaRuleOf: which of its two textures' alpha makes
+// it see-through, cut-out or smooth) baked into the textures' alpha channels, so the game needs nothing
+// new: the blend mixes the two alphas by the vertex alpha as it does the colours, so "A only" gives B
+// A's alpha (and the other way round), and a cut-out alpha is made on/off. Returns the alpha kind.
+function applyAlphaRule(m, rgba, rgba2, w, h, smooth) {
+  const rule = m.alphaRule;
+  const n = w * h;
+  // what's plugged into Alpha: texture A's alpha (its alpha channel, or its brightness)
+  if (m.alphaImage) {
+    const am = rasterize(m.alphaImage, w, h, { smooth });
+    let hasAlpha = false;
+    for (let i = 0; i < n && !hasAlpha; i++) if (am[i * 4 + 3] < 250) hasAlpha = true;
+    for (let i = 0; i < n; i++) rgba[i * 4 + 3] = hasAlpha ? am[i * 4 + 3] : Math.round(0.299 * am[i * 4] + 0.587 * am[i * 4 + 1] + 0.114 * am[i * 4 + 2]);
+  }
+  const cut = (arr) => { for (let i = 0; i < n; i++) arr[i * 4 + 3] = arr[i * 4 + 3] >= 128 ? 255 : 0; };
+  const solid = (arr) => { for (let i = 0; i < n; i++) arr[i * 4 + 3] = 255; };
+  const a = rule.a, b = rgba2 ? rule.b : null;
+  if (a === 'cutout') cut(rgba);
+  if (b === 'cutout') cut(rgba2);
+  if (!a) solid(rgba);
+  if (rgba2) {
+    if (a && !b) for (let i = 0; i < n; i++) rgba2[i * 4 + 3] = rgba[i * 4 + 3];
+    else if (b && !a) for (let i = 0; i < n; i++) rgba[i * 4 + 3] = rgba2[i * 4 + 3];
+  }
+  const modes = [a, b].filter(Boolean);
+  return modes.includes('smooth') ? 'blend' : modes.length ? 'cutout' : 'opaque';
 }
 
 // ---------------------------------------------------------------------------
@@ -267,6 +299,13 @@ export function uploadPackage(engine, slot, pkg, meta = {}) {
     M.HEAPU8.set(m.tex2.rgba, p2);
     if (!M._studio_model_material_b(slot, engineMat[i], p2, m.tex2.w, m.tex2.h)) blended[i] = false;
     M._free(p2);
+  }
+  // how each material applies its vertex colours (an engine without studio_model_material_vc multiplies)
+  if (M._studio_model_material_vc) {
+    for (const [i] of pkg.materials.entries()) {
+      const mode = VC_ORDER.indexOf((mm[i] || {}).vc || 'multiply');
+      if (mode > 0 && engineMat[i] >= 0) M._studio_model_material_vc(slot, engineMat[i], mode);
+    }
   }
   // triangles per material
   const byMat = new Map();

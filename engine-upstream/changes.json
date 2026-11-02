@@ -3349,7 +3349,7 @@
    ]
   },
   "src/pc/gfx/gfx_opengl.c": {
-   "sha256": "1a1b45ed41efd127a5878558ebd98a0c6d5cf71f8f24fe29c93f45e625e5931c",
+   "sha256": "edcc1da3dead0b96503df8d2f8faa13e8dc2f4f0183deb25721ad664ffe8a9be",
    "hunks": [
     [
      212,
@@ -3381,8 +3381,22 @@
      [
       "    if (opt_studio_blend) {",
       "        // Studio 64: texel0 to texel1 by the vertex colour's alpha, times the vertex colour (vInput1: shade)",
+      "        // then the vertex colour applied by the material's mode (gfx_cc.h SHADER_STUDIO_VC_SHIFT)",
+      "        static const char *const vcModes[8] = {",
+      "            \"sbBlend.rgb * vInput1.rgb\",",
+      "            \"sbBlend.rgb + vInput1.rgb - sbBlend.rgb * vInput1.rgb\",",
+      "            \"min(sbBlend.rgb + vInput1.rgb, vec3(1.0))\",",
+      "            \"max(sbBlend.rgb - vInput1.rgb, vec3(0.0))\",",
+      "            \"max(sbBlend.rgb + vInput1.rgb - vec3(1.0), vec3(0.0))\",",
+      "            \"(sbBlend.rgb + vInput1.rgb) * 0.5\",",
+      "            \"sbBlend.rgb * vInput1.rgb\",",
+      "            \"sbBlend.rgb * vInput1.rgb\",",
+      "        };",
+      "        const char *vc = vcModes[(shader_id >> SHADER_STUDIO_VC_SHIFT) & 7];",
       "        append_line(fs_buf, &fs_len, \"vec4 sbBlend = mix(texVal0, texVal1, vInput1.a);\");",
-      "        append_str(fs_buf, &fs_len, opt_alpha ? \"vec4 texel = vec4(sbBlend.rgb * vInput1.rgb, sbBlend.a)\" : \"vec3 texel = sbBlend.rgb * vInput1.rgb\");",
+      "        append_str(fs_buf, &fs_len, opt_alpha ? \"vec4 texel = vec4(\" : \"vec3 texel = (\");",
+      "        append_str(fs_buf, &fs_len, vc);",
+      "        append_str(fs_buf, &fs_len, opt_alpha ? \", sbBlend.a)\" : \")\");",
       "    } else {"
      ]
     ],
@@ -3414,7 +3428,7 @@
    ]
   },
   "src/pc/gfx/gfx_pc.c": {
-   "sha256": "e9dd9b4fb6fabde63a5c0ace957f21cfeaec8a97ba4d104e2070116215d978d4",
+   "sha256": "5f51e5568efec37ee074f26b11cdbe9f11ab6968d961c660394cacdc71c711b6",
    "hunks": [
     [
      76,
@@ -3437,7 +3451,8 @@
      149,
      0,
      [
-      "    bool studio_blend_cc; // Studio 64: the combine is a 2-texture blend by shade alpha (G_SETCOMBINE)"
+      "    bool studio_blend_cc; // Studio 64: the combine is a 2-texture blend by shade alpha (G_SETCOMBINE)",
+      "    uint8_t studio_vc_mode; // and how its second cycle applies the vertex colour (SHADER_STUDIO_VC_SHIFT)"
      ]
     ],
     [
@@ -3522,7 +3537,7 @@
       "    bool studio_blend = rdp.studio_blend_cc && (rdp.other_mode_h & (3U << G_MDSFT_CYCLETYPE)) == G_CYC_2CYCLE;",
       "    if (studio_blend) {",
       "        uint32_t f = CC_TEXEL1 | (CC_TEXEL0 << 3) | (CC_SHADE << 6) | (CC_TEXEL0 << 9);",
-      "        cc_id = f | (f << 12) | SHADER_OPT_STUDIO_BLEND;",
+      "        cc_id = f | (f << 12) | SHADER_OPT_STUDIO_BLEND | ((uint32_t) rdp.studio_vc_mode << SHADER_STUDIO_VC_SHIFT);",
       "    }"
      ]
     ],
@@ -3612,7 +3627,20 @@
      [
       "                // Studio 64: first cycle (TEXEL1 - TEXEL0) * SHADE_ALPHA + TEXEL0: a blended material",
       "                rdp.studio_blend_cc = C0(20, 4) == G_CCMUX_TEXEL1 && C1(28, 4) == G_CCMUX_TEXEL0",
-      "                    && C0(15, 5) == G_CCMUX_SHADE_ALPHA && C1(15, 3) == G_CCMUX_TEXEL0;"
+      "                    && C0(15, 5) == G_CCMUX_SHADE_ALPHA && C1(15, 3) == G_CCMUX_TEXEL0;",
+      "                // its second cycle: the vertex colour times it (COMBINED, 0, SHADE, 0), or screen",
+      "                // (ENV, COMBINED, SHADE, COMBINED), add (COMBINED, 0, ENV, SHADE), subtract",
+      "                // (COMBINED, SHADE, ENV, 0), linear burn (COMBINED, ENV, ENV, SHADE), average",
+      "                // (COMBINED, SHADE, PRIM, SHADE); ENV is white, PRIM grey",
+      "                {",
+      "                    uint32_t a2 = C0(5, 4), b2 = C1(24, 4), c2 = C0(0, 5), d2 = C1(6, 3);",
+      "                    rdp.studio_vc_mode = 0;",
+      "                    if (a2 == G_CCMUX_ENVIRONMENT && b2 == G_CCMUX_COMBINED && c2 == G_CCMUX_SHADE) rdp.studio_vc_mode = 1;",
+      "                    else if (a2 == G_CCMUX_COMBINED && c2 == G_CCMUX_ENVIRONMENT && d2 == G_CCMUX_SHADE && b2 != G_CCMUX_ENVIRONMENT) rdp.studio_vc_mode = 2;",
+      "                    else if (a2 == G_CCMUX_COMBINED && b2 == G_CCMUX_SHADE && c2 == G_CCMUX_ENVIRONMENT) rdp.studio_vc_mode = 3;",
+      "                    else if (a2 == G_CCMUX_COMBINED && b2 == G_CCMUX_ENVIRONMENT && c2 == G_CCMUX_ENVIRONMENT) rdp.studio_vc_mode = 4;",
+      "                    else if (a2 == G_CCMUX_COMBINED && b2 == G_CCMUX_SHADE && c2 == G_CCMUX_PRIMITIVE) rdp.studio_vc_mode = 5;",
+      "                }"
      ]
     ],
     [
@@ -3899,7 +3927,7 @@
    ]
   },
   "src/pc/gfx/gfx_cc.h": {
-   "sha256": "eab76dbbdadaf1d91436afe9e289eab102ffdc101f2906600daea76a95327ba1",
+   "sha256": "cdbaf183dbd73057660583af383677ef1094489d73b87f0aab8baf2c07e77167",
    "hunks": [
     [
      32,
@@ -3908,7 +3936,10 @@
       "// Studio 64: two textures blended by the vertex colour's alpha, then times the vertex colour",
       "// (an imported model's blended material: the N64's 2-cycle (TEXEL1 - TEXEL0) * SHADE_ALPHA + TEXEL0,",
       "// then COMBINED * SHADE). The colour formula is that; inputs carry alpha even when opaque.",
-      "#define SHADER_OPT_STUDIO_BLEND (1 << 28)"
+      "#define SHADER_OPT_STUDIO_BLEND (1 << 28)",
+      "// Studio 64: how a blended material's vertex colour is applied (3 bits: multiply, screen, add,",
+      "// subtract, linear burn, average; assets.c emit_material)",
+      "#define SHADER_STUDIO_VC_SHIFT 29"
      ]
     ]
    ]

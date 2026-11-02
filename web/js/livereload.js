@@ -374,7 +374,8 @@ export class LiveReload {
     const old = meta.materials || [];
     const materials = pkg.materials.map((m, i) => {
       const keep = old.find((o) => o.name === m.name) || (old.length === pkg.materials.length ? old[i] : null);
-      return keep ? keepMaterialMeta(keep, m.name) : fresh[i];
+      // (a transparency rule in the material's name decides its transparency again on every reload)
+      return keep ? { ...keepMaterialMeta(keep, m.name), ...(m.alphaRuled ? { alpha: fresh[i].alpha, double: fresh[i].double } : {}), ...(m.doubleFromName ? { double: true } : {}), vc: m.vcMode && m.vcMode !== 'multiply' ? m.vcMode : undefined } : fresh[i]; // (the name decides the colour mode: none = multiply)
     });
     const bytes = await encodePackage(pkg);
     const file = await A.upload(new Blob([bytes]), 'model', meta.name);

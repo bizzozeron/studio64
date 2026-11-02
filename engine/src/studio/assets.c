@@ -195,6 +195,8 @@ struct AssetMat {
     u8 *tex2;    // a blended material's second image (FBX: the Emission Color texture): where the
                  // vertex colour's alpha is 0 it shows, at 1 the first (studio_model_material_b)
     s32 flags;   // ASSET_MAT_*
+    s32 vcMode;  // how the vertex colour is applied: 0 multiply, 1 screen, 2 add, 3 subtract, 4 linear
+                 // burn, 5 average (studio_model_material_vc)
     f32 *verts;  // triangles: 3 * VERT_FLOATS per triangle
     s32 ntri, cap;
     s32 v0;      // its first vertex in the model's vtx (3 per triangle)
@@ -399,6 +401,18 @@ EMSCRIPTEN_KEEPALIVE s32 studio_model_material(s32 id, const u8 *rgba, s32 w, s3
 // triangles. The vertex colours' alpha then blends between the two (1: the first image, 0: this one),
 // and the colour multiplies the result, like Ocarina of Time's terrain: the N64's 2-cycle combine
 // (TEXEL1 - TEXEL0) * SHADE_ALPHA + TEXEL0, then COMBINED * SHADE (gfx_pc.c draws it).
+// How a material applies its vertex colours (the material name's *Screen etc., asset_import.js):
+// 0 multiply (the game's), 1 screen, 2 add, 3 subtract, 4 linear burn, 5 average. Set before the
+// model is finished.
+EMSCRIPTEN_KEEPALIVE s32 studio_model_material_vc(s32 id, s32 matIndex, s32 mode) {
+    struct AssetModel *m = model_by_id(id);
+    if (m == NULL || matIndex < 0 || matIndex >= m->nmats || mode < 0 || mode > 5) {
+        return 0;
+    }
+    m->mats[matIndex].vcMode = mode;
+    return 1;
+}
+
 EMSCRIPTEN_KEEPALIVE s32 studio_model_material_b(s32 id, s32 matIndex, const u8 *rgba, s32 w, s32 h) {
     struct AssetModel *m = model_by_id(id);
     struct AssetMat *mat;
@@ -495,18 +509,59 @@ static Gfx *emit_material(Gfx *g, Vtx *vtx, s32 *vi, struct AssetMat *mat) {
         // blended: TEXEL0 = the second image (tmem 0), TEXEL1 = the first (tmem 256: 2 KB each,
         // the 4 KB of texture memory); by the shade alpha from TEXEL0 to TEXEL1, then times the shade
         gDPSetCycleType(g++, G_CYC_2CYCLE);
-        gDPSetCombineLERP(g++, TEXEL1, TEXEL0, SHADE_ALPHA, TEXEL0, TEXEL1, TEXEL0, SHADE, TEXEL0,
-                          COMBINED, 0, SHADE, 0, 0, 0, 0, COMBINED);
+        // second cycle: the vertex colour applied by the material's mode (gfx_pc.c reads it back);
+        // ENV white is 1, PRIM grey a half (the N64 combiner has no constant 1 there)
+        switch (mat->vcMode) {
+            case 1: gDPSetCombineLERP(g++, TEXEL1, TEXEL0, SHADE_ALPHA, TEXEL0, TEXEL1, TEXEL0, SHADE, TEXEL0,
+                                      ENVIRONMENT, COMBINED, SHADE, COMBINED, 0, 0, 0, COMBINED); break;
+            case 2: gDPSetCombineLERP(g++, TEXEL1, TEXEL0, SHADE_ALPHA, TEXEL0, TEXEL1, TEXEL0, SHADE, TEXEL0,
+                                      COMBINED, 0, ENVIRONMENT, SHADE, 0, 0, 0, COMBINED); break;
+            case 3: gDPSetCombineLERP(g++, TEXEL1, TEXEL0, SHADE_ALPHA, TEXEL0, TEXEL1, TEXEL0, SHADE, TEXEL0,
+                                      COMBINED, SHADE, ENVIRONMENT, 0, 0, 0, 0, COMBINED); break;
+            case 4: gDPSetCombineLERP(g++, TEXEL1, TEXEL0, SHADE_ALPHA, TEXEL0, TEXEL1, TEXEL0, SHADE, TEXEL0,
+                                      COMBINED, ENVIRONMENT, ENVIRONMENT, SHADE, 0, 0, 0, COMBINED); break;
+            case 5: gDPSetCombineLERP(g++, TEXEL1, TEXEL0, SHADE_ALPHA, TEXEL0, TEXEL1, TEXEL0, SHADE, TEXEL0,
+                                      COMBINED, SHADE, PRIMITIVE, SHADE, 0, 0, 0, COMBINED); break;
+            default: gDPSetCombineLERP(g++, TEXEL1, TEXEL0, SHADE_ALPHA, TEXEL0, TEXEL1, TEXEL0, SHADE, TEXEL0,
+                                       COMBINED, 0, SHADE, 0, 0, 0, 0, COMBINED); break;
+        }
+        if (mat->vcMode) {
+            gDPSetEnvColor(g++, 255, 255, 255, 255);
+            gDPSetPrimColor(g++, 0, 0, 128, 128, 128, 255);
+        }
         gSPTexture(g++, 0xFFFF, 0xFFFF, 0, G_TX_RENDERTILE, G_ON);
         gDPLoadTextureBlock(g++, mat->tex2, G_IM_FMT_RGBA, G_IM_SIZ_16b, 32, 32, 0, cmsMode, cmtMode, 5, 5,
                             G_TX_NOLOD, G_TX_NOLOD);
         gDPLoadMultiBlock(g++, mat->tex, 256, 1, G_IM_FMT_RGBA, G_IM_SIZ_16b, 32, 32, 0, cmsMode, cmtMode, 5, 5,
                           G_TX_NOLOD, G_TX_NOLOD);
     } else if (mat->tex != NULL) {
-        if (layer == MAT_OPAQUE) {
-            gDPSetCombineMode(g++, G_CC_MODULATERGB, G_CC_MODULATERGB);
+        // the vertex colour by the material's mode (as above, in one cycle; alpha as the game's)
+        if (mat->vcMode == 0) {
+            if (layer == MAT_OPAQUE) {
+                gDPSetCombineMode(g++, G_CC_MODULATERGB, G_CC_MODULATERGB);
+            } else {
+                gDPSetCombineMode(g++, G_CC_MODULATERGBA, G_CC_MODULATERGBA);
+            }
         } else {
-            gDPSetCombineMode(g++, G_CC_MODULATERGBA, G_CC_MODULATERGBA);
+            if (layer == MAT_OPAQUE) {
+                switch (mat->vcMode) {
+                    case 1: gDPSetCombineLERP(g++, ENVIRONMENT, TEXEL0, SHADE, TEXEL0, 0, 0, 0, SHADE, ENVIRONMENT, TEXEL0, SHADE, TEXEL0, 0, 0, 0, SHADE); break;
+                    case 2: gDPSetCombineLERP(g++, TEXEL0, 0, ENVIRONMENT, SHADE, 0, 0, 0, SHADE, TEXEL0, 0, ENVIRONMENT, SHADE, 0, 0, 0, SHADE); break;
+                    case 3: gDPSetCombineLERP(g++, TEXEL0, SHADE, ENVIRONMENT, 0, 0, 0, 0, SHADE, TEXEL0, SHADE, ENVIRONMENT, 0, 0, 0, 0, SHADE); break;
+                    case 4: gDPSetCombineLERP(g++, TEXEL0, ENVIRONMENT, ENVIRONMENT, SHADE, 0, 0, 0, SHADE, TEXEL0, ENVIRONMENT, ENVIRONMENT, SHADE, 0, 0, 0, SHADE); break;
+                    default: gDPSetCombineLERP(g++, TEXEL0, SHADE, PRIMITIVE, SHADE, 0, 0, 0, SHADE, TEXEL0, SHADE, PRIMITIVE, SHADE, 0, 0, 0, SHADE); break;
+                }
+            } else {
+                switch (mat->vcMode) {
+                    case 1: gDPSetCombineLERP(g++, ENVIRONMENT, TEXEL0, SHADE, TEXEL0, TEXEL0, 0, SHADE, 0, ENVIRONMENT, TEXEL0, SHADE, TEXEL0, TEXEL0, 0, SHADE, 0); break;
+                    case 2: gDPSetCombineLERP(g++, TEXEL0, 0, ENVIRONMENT, SHADE, TEXEL0, 0, SHADE, 0, TEXEL0, 0, ENVIRONMENT, SHADE, TEXEL0, 0, SHADE, 0); break;
+                    case 3: gDPSetCombineLERP(g++, TEXEL0, SHADE, ENVIRONMENT, 0, TEXEL0, 0, SHADE, 0, TEXEL0, SHADE, ENVIRONMENT, 0, TEXEL0, 0, SHADE, 0); break;
+                    case 4: gDPSetCombineLERP(g++, TEXEL0, ENVIRONMENT, ENVIRONMENT, SHADE, TEXEL0, 0, SHADE, 0, TEXEL0, ENVIRONMENT, ENVIRONMENT, SHADE, TEXEL0, 0, SHADE, 0); break;
+                    default: gDPSetCombineLERP(g++, TEXEL0, SHADE, PRIMITIVE, SHADE, TEXEL0, 0, SHADE, 0, TEXEL0, SHADE, PRIMITIVE, SHADE, TEXEL0, 0, SHADE, 0); break;
+                }
+            }
+            gDPSetEnvColor(g++, 255, 255, 255, 255);
+            gDPSetPrimColor(g++, 0, 0, 128, 128, 128, 255);
         }
         gSPTexture(g++, 0xFFFF, 0xFFFF, 0, G_TX_RENDERTILE, G_ON);
         gDPLoadTextureBlock(g++, mat->tex, G_IM_FMT_RGBA, G_IM_SIZ_16b, 32, 32, 0, cmsMode, cmtMode, 5, 5,
@@ -708,7 +763,7 @@ EMSCRIPTEN_KEEPALIVE s32 studio_model_end(s32 id) {
         struct AssetMat *mat = &m->mats[i];
         s32 k;
         total += mat->ntri;
-        cmds += 24 + (mat->ntri / 10 + 1) * 7 + (mat->tex2 != NULL ? 16 : 0); // (a blend: 2-cycle, a second load)
+        cmds += 24 + (mat->ntri / 10 + 1) * 7 + (mat->tex2 != NULL ? 16 : 0) + (mat->vcMode ? 2 : 0); // (a blend: 2-cycle, a second load; a vertex colour mode: its colours)
         for (k = 0; k < mat->ntri * 3; k++) {
             const f32 *p = mat->verts + k * VERT_FLOATS;
             s32 a;

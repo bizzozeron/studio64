@@ -23,6 +23,8 @@
 #include "engine/surface_collision.h"
 #include "engine/surface_load.h"
 #include "game/object_list_processor.h"
+#include "game/area.h"
+#include "game/level_update.h"
 #include "behavior_data.h"
 #include "surface_terrains.h"
 
@@ -355,12 +357,20 @@ static void walk_dl(struct Rsp *r, const Gfx *dl, s32 depth) {
 
 static void walk_graph(struct GraphNode *first, Mat4 parent, s32 layer);
 
+static s32 sDefaultLit;
+
 static void draw_dl(const Gfx *dl, Mat4 m, struct GraphNode *n) {
     struct Rsp *r;
     if (dl == NULL) return;
     r = calloc(1, sizeof(struct Rsp));
     mtxf_copy(r->m, m);
     r->curMat = -1;
+    // the game's own models start from the frame's geometry mode, lighting on (init_rcp): a display list
+    // that doesn't clear it is lit, and its vertices carry normals, not colours (studio_stagedump)
+    if (sDefaultLit) {
+        r->mat.geomode = G_LIGHTING | G_SHADE | G_CULL_BACK | G_SHADING_SMOOTH | G_ZBUFFER;
+        r->mat.lit = TRUE;
+    }
     r->texScale = 0xFFFFFFFF;
     r->mat.layer = (u8) ((n->flags >> 8) & 0xFF);
     walk_dl(r, dl, 0);
@@ -371,6 +381,10 @@ static void walk_node(struct GraphNode *n, Mat4 parent, s32 layer) {
     Mat4 m;
     const Gfx *own = NULL;
     switch (n->type) {
+        // (in an area's own graph, studio_stagedump: not the objects, nor the sky)
+        case GRAPH_NODE_TYPE_OBJECT_PARENT:
+        case GRAPH_NODE_TYPE_BACKGROUND:
+            return;
         case GRAPH_NODE_TYPE_DISPLAY_LIST:
             draw_dl(((struct GraphNodeDisplayList *) n)->displayList, parent, n);
             walk_graph(n->children, parent, layer);
@@ -489,7 +503,19 @@ static void dump_object(struct Object *o) {
     walk_graph(o->header.gfx.sharedChild, m, 0);
 }
 
+static s32 sLevelToo, sStructures;
+
+// studio_stagedump's second pass: the level's own pieces that are objects in the game (Whomp's
+// Fortress's tower and platforms, bridges, doors, scenery): what has a collision model or is plain
+// static scenery, not Mario, not the studio's own (those are the first pass)
+static s32 is_structure(struct Object *o) {
+    if (!(o->activeFlags & ACTIVE_FLAG_ACTIVE) || o->header.gfx.sharedChild == NULL || o == gMarioObject || o->unused2 != 0) return FALSE;
+    if (o->header.gfx.node.flags & GRAPH_RENDER_INVISIBLE) return FALSE;
+    return o->collisionData != NULL || o->behavior == segmented_to_virtual(bhvStaticObject);
+}
+
 static s32 dumped(struct Object *o, const s32 *skip, s32 nskip) {
+    if (sStructures) return is_structure(o);
     if (sOnlyUid) {
         return (o->activeFlags & ACTIVE_FLAG_ACTIVE) && o->unused2 == sOnlyUid && o->header.gfx.sharedChild != NULL;
     }
@@ -557,6 +583,14 @@ EMSCRIPTEN_KEEPALIVE const u8 *studio_romdump(const s32 *skip, s32 nskip, const 
     for (i = 0; i < OBJECT_POOL_CAPACITY; i++) {
         struct Object *o = &gObjectPool[i];
         if (dumped(o, skip, nskip)) dump_object(o);
+    }
+    // the area's own geometry too (studio_stagedump: an original level's meshes, as they are now)
+    if (sLevelToo && gCurrentArea != NULL && gCurrentArea->unk04 != NULL) {
+        Mat4 id;
+        mtxf_identity(id);
+        sDefaultLit = TRUE;
+        walk_graph(&gCurrentArea->unk04->node, id, 0);
+        sDefaultLit = FALSE;
     }
 
     put("S64D", 4);
@@ -647,4 +681,19 @@ EMSCRIPTEN_KEEPALIVE const u8 *studio_romdump_object(u32 uid) {
 EMSCRIPTEN_KEEPALIVE
 u32 studio_slot_uid(s32 slot) {
     return slot >= 0 && slot < OBJECT_POOL_CAPACITY ? gObjectPool[slot].unused2 : 0;
+}
+
+// The stage export (web/js/stage_export.js). mode 0: the current area with its own level geometry
+// (an original level's meshes) besides the studio's terrain, blocks and models (bake as
+// studio_romdump); mode 1: the level's pieces that are objects (is_structure), where they are now.
+EMSCRIPTEN_KEEPALIVE const u8 *studio_stagedump(const s32 *bake, s32 nbake, s32 mode) {
+    const u8 *out;
+    sLevelToo = mode == 0;
+    sStructures = mode == 1;
+    sDefaultLit = sStructures; // (the game's pieces; the level's own meshes get it in their walk)
+    out = studio_romdump(NULL, 0, bake, nbake);
+    sDefaultLit = FALSE;
+    sLevelToo = FALSE;
+    sStructures = FALSE;
+    return out;
 }

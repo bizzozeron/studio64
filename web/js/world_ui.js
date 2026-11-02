@@ -4,6 +4,7 @@
 // weather, camera, sound, death height) and the hack's flow (start, hub, star goal).
 // The world map (world_map.js) shows how it all connects.
 import { icon } from './icons.js';
+import { StageExport } from './stage_export.js';
 import { TEMPLATES } from './templates.js';
 import { World } from './world.js';
 import { WorldMap } from './world_map.js';
@@ -138,6 +139,9 @@ export class WorldUI {
 
     // flow
     pane.appendChild(this.section('Hack flow', this.flowBox(f), 'flow'));
+
+    // the stage as a model file (stage_export.js)
+    pane.appendChild(this.section('Export the stage', this.exportBox(), 'export'));
     pane.scrollTop = scroll;
   }
 
@@ -390,6 +394,43 @@ export class WorldUI {
     });
     box.querySelector('[data-a=fallto]').onclick = () => this.chooseDestination({ title: 'Falling off leads to…', onPick: (to) => this.flow.setEnv({ fallTo: to }, `Falling leads to ${this.destName(to)}`), allowHub: true });
     box.querySelector('[data-a=fallclear]')?.addEventListener('click', () => this.flow.setEnv({ fallTo: null }, 'Falling costs a life again'));
+    return box;
+  }
+
+  exportBox() {
+    const box = el('div', 'wd-flow');
+    box.innerHTML = `<div class="wd-note">The level's geometry as the game draws it (with your blocks and models), one mesh per area, and its objects as named empties, all around the stage's origin: a .zip with a Collada file (.dae) and its textures. Blender: Z up, 1 unit = 1 game unit. Names come back in when you import the model again (Koopa_Shell.001, Star_3, Mario_Default_Start).</div>
+      <label class="wd-check"><input type="checkbox" data-a="all"> Every area of the level (not just this one)</label>
+      <label class="wd-check" title="Off: every vertex colour white (1, 1, 1, 1). On: the game's own, where it has them (baked shading on some levels; pieces lit by the sun may come out with odd colours)"><input type="checkbox" data-a="colors"> Keep the game's vertex colours</label>
+      <div class="btn-row"><button class="btn sm primary" data-a="go">${icon('download', 'sm')}Export as Collada (.dae)</button></div>
+      <div class="wd-note" data-a="status" hidden></div>`;
+    const go = box.querySelector('[data-a=go]');
+    const status = box.querySelector('[data-a=status]');
+    go.onclick = async () => {
+      if (this.exporting) return;
+      this.exporting = true;
+      go.disabled = true;
+      status.hidden = false;
+      const wasBuilding = this.editor?.active;
+      if (wasBuilding) this.editor.exit();
+      try {
+        const ex = new StageExport({ engine: this.engine, worldFlow: this.flow, catalog: this.catalog });
+        const r = await ex.run({ all: box.querySelector('[data-a=all]').checked, colors: box.querySelector('[data-a=colors]').checked, onStep: ({ text }) => { status.textContent = text; } });
+        const url = URL.createObjectURL(r.blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = r.name;
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 60000);
+        status.textContent = `${r.name}: ${r.stats.areas} area${r.stats.areas > 1 ? 's' : ''}, ${r.stats.tris.toLocaleString()} triangles, ${r.stats.textures} textures, ${r.stats.objects} objects`;
+        this.toast(`Exported ${r.name}`, 'check');
+      } catch (err) {
+        status.textContent = `Could not export: ${err.message}`;
+        this.toast(err.message, 'x');
+      } finally {
+        this.exporting = false;
+        go.disabled = false;
+      }
+    };
     return box;
   }
 
