@@ -17,6 +17,21 @@ export const ANIMS = { none: 0, spin: 1, bob: 2, spin_bob: 3, sway: 4, pulse: 5 
 export const ANIM_NAMES = { none: 'Still', spin: 'Spin', bob: 'Float up & down', spin_bob: 'Spin & float', sway: 'Sway', pulse: 'Pulse' };
 
 // Mario's parts, in the engine's order (ASSET_MARIO_* in studio_assets.h).
+const START_ENTRY = 'studio:mario_start';
+// game objects in model files (Assets.markerEntry): names compared in lower case, spaces as underscores
+const markerKey = (s) => String(s || '').trim().toLowerCase().replace(/[\s_]+/g, '_');
+// a model's objects as a short version string ('' when it has none). The file is part of it: every
+// reload of the file places its objects (and Mario's start) again, even where they didn't move in it
+// (what was moved in the studio goes back to where the file has it)
+function markersVersion(m) {
+  const list = m?.markers;
+  if (!list?.length) return '';
+  const t = JSON.stringify([m.file, list]);
+  let h = 0x811c9dc5;
+  for (let i = 0; i < t.length; i++) { h ^= t.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+  return (h >>> 0).toString(36);
+}
+
 export const MARIO_PARTS = [
   ['overalls', 'Overalls'], ['shirt', 'Shirt & arms'], ['gloves', 'Gloves'], ['shoes', 'Shoes'], ['skin', 'Skin'], ['hair', 'Hair'], ['cap', 'Cap'],
 ];
@@ -260,8 +275,93 @@ export class Assets {
       return -1;
     }
     this.pending.delete(rec.uid);
+    if ((rec.asset.markers || '') !== markersVersion(this.model(a.model))) this.queueMarkers(rec.uid);
     return this.M._studio_model_spawn(e.slot, rec.x, rec.y, rec.z, rec.pitch | 0, rec.yaw | 0, rec.roll | 0, rec.scale || 1,
       this.flagsOf(a), ANIMS[a.anim] || 0, a.speed || 1, rec.uid);
+  }
+
+  // ---- game objects named in the model file ----------------------------------------------
+  // A node of the file named like an object of the game (its name in the Objects library, spaces as
+  // underscores, any case, Blender's ".001" / ".B" endings) is that object: placed with the model,
+  // at the node's spot and facing. They're records of their own (rec.fbx = { model, from: placement
+  // uid, node }); when the file changes, the old ones go and the new ones come where the file puts them.
+  markerEntry(name) {
+    if (!this._markerNames) {
+      this._markerNames = new Map();
+      for (const e of this.engine.catalog?.entries || []) {
+        const k = markerKey(e.name);
+        if (k && !this._markerNames.has(k)) this._markerNames.set(k, e);
+      }
+    }
+    let n = String(name || '');
+    for (let guard = 0; n && guard < 8; guard++) {
+      if (markerKey(n) === 'mario_default_start') return { id: START_ENTRY, name: 'Mario Default Start' }; // (editor.js: the area's start)
+      const e = this._markerNames.get(markerKey(n));
+      if (e) return e;
+      const dot = n.lastIndexOf('.');
+      if (dot <= 0) break;
+      n = n.slice(0, dot);
+    }
+    return null;
+  }
+
+  entryName(id) { return id === START_ENTRY ? 'Mario Default Start' : this.engine.catalog?.entries.find((e) => e.id === id)?.name || id; }
+
+  queueMarkers(uid) {
+    (this._markerQueue ||= new Set()).add(uid);
+    clearTimeout(this._markerTimer);
+    this._markerTimer = setTimeout(() => {
+      const uids = [...this._markerQueue];
+      this._markerQueue.clear();
+      for (const u of uids) { try { this.syncMarkers(u); } catch (err) { console.error('model objects', err); } }
+    }, 0);
+  }
+
+  // The objects of the placement `uid` (this area) as its model's file has them now.
+  syncMarkers(uid) {
+    const key = this.key();
+    const area = this.getPatch()?.areas?.[key];
+    const place = area?.objects?.find((r) => r.uid === uid && r.asset);
+    if (!place) return; // (a placement being dragged in, not placed yet)
+    const m = this.model(place.asset.model);
+    const ver = markersVersion(m);
+    if ((place.asset.markers || '') === ver) return;
+    // the old ones go
+    const old = area.objects.filter((r) => r.fbx?.from === uid).map((r) => r.uid);
+    if (old.length) {
+      for (const u of old) this.engine.deleteUid(u);
+      for (let i = area.objects.length - 1; i >= 0; i--) if (old.includes(area.objects[i].uid)) area.objects.splice(i, 1); // (in place: the editor holds this array)
+      this.commit({ type: 'remove', key, summary: `${m?.name || 'Model'}: its objects moved`, uids: old, rules: [] });
+    }
+    // the new ones: the placement's spot, turn and size
+    const yaw = ((place.yaw | 0) / 65536) * 2 * Math.PI, c = Math.cos(yaw), sn = Math.sin(yaw), k = place.scale || 1;
+    const recs = (m?.markers || []).map((mk) => {
+      if (mk.entry === START_ENTRY) {
+        // Mario's start in this area (settings.spawn), not an object
+        const x = mk.x * k, z = mk.z * k;
+        this.setStart?.({ x: Math.round(place.x + x * c + z * sn), y: Math.round(place.y + mk.y * k), z: Math.round(place.z - x * sn + z * c), yaw: ((mk.yaw | 0) + (place.yaw | 0)) & 0xffff }, `${m.name}: Mario's start from the file`);
+        return null;
+      }
+      const e = this.engine.catalog?.entries.find((x) => x.id === mk.entry);
+      if (!e) return null;
+      const x = mk.x * k, z = mk.z * k;
+      const p = e.params?.[0];
+      const bparams = typeof p === 'number' ? p >>> 0 : p ? parseInt(String(p), String(p).startsWith('0x') ? 16 : 10) >>> 0 : 0;
+      return {
+        uid: 1 + Math.floor(Math.random() * 0x7efffffe), entry: e.id,
+        x: Math.round(place.x + x * c + z * sn), y: Math.round(place.y + mk.y * k), z: Math.round(place.z - x * sn + z * c),
+        yaw: ((mk.yaw | 0) + (place.yaw | 0)) & 0xffff, pitch: 0, roll: 0, bparams: bparams || 0, scale: 1, name: e.name,
+        fbx: { model: m.id, from: uid, node: mk.node },
+      };
+    }).filter(Boolean);
+    if (recs.length) {
+      for (const r of recs) { area.objects.push(r); this.engine.spawn(r); }
+      this.commit({ type: 'add', key, summary: `${m.name}: ${recs.length} object${recs.length > 1 ? 's' : ''} from the file`, records: recs });
+    }
+    // the placement remembers which version of the file's objects it has
+    const asset = { ...place.asset, markers: ver };
+    place.asset = asset;
+    this.commit({ type: 'update', key, uid, fields: { asset }, summary: `${m?.name || 'Model'}: objects from the file` });
   }
 
   // Placed models of this area that are not in the game yet (their model was still loading,
@@ -309,7 +409,7 @@ export class Assets {
 
   // Store a new model: package bytes + its metadata. Returns the model meta.
   // live: { path, hash } when it came from the live assets folder (livereload.js)
-  async addModel({ bytes, pkg, name, materials, lighting = 'baked', thumb, source, live }) {
+  async addModel({ bytes, pkg, name, materials, lighting = 'baked', thumb, source, live, markers }) {
     const file = await this.upload(new Blob([bytes]), 'model', name);
     const id = `m${Math.random().toString(36).slice(2, 9)}`;
     const meta = {
@@ -318,6 +418,7 @@ export class Assets {
       defaults: { mode: 'prop', collision: true, anim: 'none', speed: 1 },
     };
     if (live?.path) meta.live = { path: live.path, hash: live.hash || null };
+    if (markers?.length) meta.markers = markers;
     await this.save('models', [...this.meta.models, meta]);
     return meta;
   }

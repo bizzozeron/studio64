@@ -188,6 +188,8 @@ export class EditorUI {
       cats.appendChild(c);
     }
     this.entries = this.catalog.entries.map((e) => ({ ...e, cat: categoryOf(e) }));
+    // where Mario starts the area (editor.js START_UID): placed like an object, one per area
+    this.entries.unshift({ id: 'studio:mario_start', name: 'Mario Default Start', behavior: 'level start spawn', cat: 'popular', start: true, pic: 'ferris_wheel_axle:geo_bitdw_000570' });
     this.thumbs = objectPictureIds();
     $('#obj-search').addEventListener('input', () => this.renderObjects());
     this.renderObjects();
@@ -204,7 +206,7 @@ export class EditorUI {
       const words = q.split(/\s+/);
       list = list.filter((e) => words.every((w) => (e.name + ' ' + e.id + ' ' + e.behavior).toLowerCase().includes(w)));
     } else if (this.objCat === 'popular') {
-      list = POPULAR.map((id) => this.entries.find((e) => e.id === id)).filter(Boolean);
+      list = [this.entries[0], ...POPULAR.map((id) => this.entries.find((e) => e.id === id))].filter(Boolean);
     } else if (this.objCat !== 'all') {
       list = list.filter((e) => e.cat === this.objCat);
     }
@@ -213,12 +215,12 @@ export class EditorUI {
     for (const e of list.slice(0, 300)) {
       const b = el('button', 'obj');
       const letter = e.name.replace(/[^A-Za-z0-9]/g, '').slice(0, 2);
-      const pic = objectPicture(e.id);
+      const pic = objectPicture(e.pic || e.id);
       const img = pic ? `<img alt="" loading="lazy" src="${pic}">` : `<i>${esc(letter)}</i>`;
       b.innerHTML = `<span class="thumb cat-${e.cat}">${img}</span><span class="obj-name">${esc(e.name)}</span>`;
       b.title = `${e.name}\n${e.behavior}`;
       b.onclick = () => {
-        this.editor.startPlacing({ entry: e.id });
+        this.editor.startPlacing(e.start ? { start: true, name: e.name } : { entry: e.id });
         grid.querySelectorAll('.obj').forEach((x) => x.classList.toggle('active', x === b));
       };
       grid.appendChild(b);
@@ -469,7 +471,7 @@ export class EditorUI {
     const pose = this.editor.selPose();
     const rec = sel.rec;
     const block = pose.block;
-    const badge = { block: 'Block', added: 'Added', original: 'Original' }[sel.kind];
+    const badge = { block: 'Block', added: 'Added', original: 'Original', start: 'Level start' }[sel.kind];
     const num = (v) => Math.round(v);
     let html = `<button class="insp-back" data-act="close" title="Deselect (Esc)"><svg class="i sm" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></svg>Library</button>
       <div class="insp-head"><div class="insp-title">${esc(sel.name)}</div><span class="insp-badge ${sel.kind}">${badge}</span></div>`;
@@ -485,7 +487,9 @@ export class EditorUI {
       <input type="number" data-f="yaw" value="${yawToDeg(pose.yaw)}" step="15" class="w64"><span class="unit">°</span></div>
       ${block || rec?.asset ? `<div class="xyz two"><label><i class="ax">Tilt</i><input type="number" data-f="pitch" value="${yawToDeg(pose.pitch)}" step="5"></label>
       <label><i class="ax">Roll</i><input type="number" data-f="roll" value="${yawToDeg(pose.roll)}" step="5"></label></div>` : ''}</div>`;
-    if (block) {
+    if (sel.kind === 'start') {
+      html += `<div class="insp-sec"><div class="lib-tip">Mario starts this area here (a little above the marker), facing its way: choosing the level in the studio, Play from the start, and in exported ROMs his entry into your own levels. Drag it, or place it again from the library (Objects → Mario Default Start).</div></div>`;
+    } else if (block) {
       html += `<div class="insp-sec"><div class="insp-label">Shape</div><div class="seg wide">${SHAPE_NAMES.map((n, i) => `<button class="seg-btn${block.shape === i ? ' active' : ''}" data-shape="${i}">${n}</button>`).join('')}</div>
         <div class="xyz"><label><i class="ax">W</i><input type="number" data-b="sx" value="${block.sx}" step="25"></label>
         <label><i class="ax">H</i><input type="number" data-b="sy" value="${block.sy}" step="25"></label>
@@ -514,7 +518,8 @@ export class EditorUI {
       if (!rec?.asset) html += `<div class="insp-sec"><div class="insp-label">Behavior params</div><input type="text" class="mono" data-f="bparams" value="0x${bp.toString(16).padStart(8, '0').toUpperCase()}" spellcheck="false"></div>`;
     }
     if (rec?.asset && this.assetInspector) html += this.assetInspector.html(sel, rec); // imported models (assets_ui.js)
-    html += `<div class="insp-actions">
+    html += sel.kind === 'start' ? `<div class="insp-actions">
+      <button class="btn sm" data-act="mario" title="Put Mario here">Mario here</button></div>` : `<div class="insp-actions">
       <button class="btn sm" data-act="dup" title="Ctrl+D">Duplicate</button>
       <button class="btn sm" data-act="ground" title="G">Drop</button>
       <button class="btn sm" data-act="mario" title="Put Mario here">Mario here</button>

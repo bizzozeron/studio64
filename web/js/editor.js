@@ -8,6 +8,14 @@ import { isTyping } from './typing.js';
 import { SHAPES, SHAPE_NAMES, MATERIALS, PRESETS, GENERATORS, blockDefaults, blockName, yawToRad, radToYaw } from './generators.js';
 
 const GHOST_UID = 0x7f000000;
+// "Mario Default Start": where Mario starts this area (settings.spawn), shown in build mode as the
+// Bowser in the Dark World ferris wheel axle at half size, 100 below the start (START_LIFT), that can
+// be selected, moved, turned and placed like an object (never saved as one). (Not Mario's cap: the
+// cap's model is drawn by its opacity, which a plain static object leaves at 0, invisible.)
+export const START_UID = 0x7e310000;
+export const START_NAME = 'Mario Default Start';
+const START_LOOK = { bhv: 'bhvStaticObject', model: 'ferris_wheel_axle:geo_bitdw_000570', scale: 0.5 };
+const START_LIFT = 100;
 const ACCENT = '#ffc83d';
 const AXES = [
   { id: 'x', dir: [1, 0, 0], color: '#ff5d5d' },
@@ -86,6 +94,39 @@ export class Editor {
     this.lastTick = performance.now();
     this.bind();
     engine.on('frame', () => this.onFrame());
+    // the start marker: after every area load (Mario stands at the level's start then), and when the
+    // start changes (the Level buttons, undo, another tab)
+    engine.on('area', () => {
+      const m = engine.state?.()?.mario;
+      this.areaStart = m ? { x: Math.round(m.x), y: Math.round(m.y), z: Math.round(m.z), yaw: m.yaw & 0xffff } : null;
+      setTimeout(() => this.showStart(), 60);
+    });
+    world?.on?.(() => this.showStart());
+  }
+
+  // ---- the start marker --------------------------------------------------------
+
+  // where Mario starts: the area's own start, else (custom levels) the default one, else (original
+  // levels) where he stood when the area loaded
+  startPose() {
+    const s = this.world?.settings?.()?.spawn;
+    if (s) return { x: s.x, y: s.y, z: s.z, yaw: (s.yaw || 0) & 0xffff };
+    if (this.world?.isCustom?.()) { const d = this.world.defaultSpawn(); return { x: d.x, y: d.y, z: d.z, yaw: (d.yaw || 0) & 0xffff }; }
+    return this.areaStart;
+  }
+
+  showStart() {
+    if (!this.engine.ready) return;
+    this.engine.deleteUid(START_UID);
+    const p = this.active ? this.startPose() : null;
+    if (p) this.engine._spawnBase({ uid: START_UID, ...START_LOOK, x: Math.round(p.x), y: Math.round(p.y - START_LIFT), z: Math.round(p.z), yaw: p.yaw, bparams: 0 });
+    if (this.sel?.uid === START_UID) this.refreshSelection();
+  }
+
+  // the marker moved (dragged, typed, placed): that is the area's start now
+  setStart(f, summary = 'Moved') {
+    const spawn = { x: Math.round(f.x), y: Math.round(f.y + START_LIFT), z: Math.round(f.z), yaw: (f.yaw | 0) & 0xffff };
+    this.world.setSettings({ spawn }, `${summary} ${START_NAME}`);
   }
 
   // ---- mode -----------------------------------------------------------------
@@ -106,6 +147,7 @@ export class Editor {
     this.overlay.classList.add('on');
     this.frame.classList.add('building');
     this.ui.onModeChange(true);
+    this.showStart();
   }
 
   exit() {
@@ -122,6 +164,7 @@ export class Editor {
     this.frame.classList.remove('building');
     this.clearOverlay();
     this.ui.onModeChange(false);
+    this.showStart(); // (hidden while playing)
   }
 
   toggle() { if (this.active) this.exit(); else this.enter(); }
@@ -375,6 +418,11 @@ export class Editor {
   }
 
   describe(o) {
+    if (o.uid === START_UID) {
+      const p = this.startPose() || { x: o.x, y: o.y, z: o.z, yaw: o.yaw };
+      const rec = { x: p.x, y: p.y - START_LIFT, z: p.z, yaw: p.yaw, pitch: 0, roll: 0, scale: START_LOOK.scale, name: START_NAME, start: true };
+      return { slot: o.slot, uid: START_UID, obj: o, rec, kind: 'start', name: START_NAME, entry: null, movable: true };
+    }
     const rec = this.recordOf(o.uid);
     const cat = o.cat >= 0 ? this.studio.catalog.entries[o.cat] : null;
     return {
@@ -437,6 +485,7 @@ export class Editor {
     if (!s) return;
     const fields = { x: Math.round(pose.p[0]), y: Math.round(pose.p[1]), z: Math.round(pose.p[2]), yaw: pose.yaw & 0xffff, pitch: pose.pitch | 0, roll: pose.roll | 0 };
     if (!pose.block && pose.scale) fields.scale = Math.round(pose.scale * 1000) / 1000;
+    if (s.kind === 'start') { this.setStart(fields, summary); return; }
     if (s.rec) {
       this.commit({ type: 'update', uid: s.uid, fields, summary: `${summary} ${s.name}` });
     } else {
@@ -500,6 +549,7 @@ export class Editor {
   deleteSelected() {
     const s = this.sel;
     if (!s) return;
+    if (s.kind === 'start') { this.toast(`Every level has a start: move ${START_NAME} instead`, 'x'); return; }
     if (s.rec) {
       this.engine.deleteUid(s.uid);
       this.commit({ type: 'remove', summary: `Removed ${s.name}`, uids: [s.uid], rules: [] });
@@ -517,7 +567,7 @@ export class Editor {
 
   duplicateSelected() {
     const s = this.sel;
-    if (!s) return;
+    if (!s || s.kind === 'start') return;
     const pose = this.selPose();
     const off = pose.block ? Math.max(pose.block.sx, 120) + 20 : 200;
     const R = rotRows(0, pose.yaw, 0);
@@ -674,6 +724,7 @@ export class Editor {
   }
 
   makeRecord(item, pose, uid) {
+    if (item.start) return { uid, ...START_LOOK, x: pose.p[0], y: pose.p[1], z: pose.p[2], yaw: pose.yaw, pitch: 0, roll: 0, bparams: 0, name: START_NAME };
     if (item.asset) {
       // an imported model (assets.js): prop or level geometry
       return { uid, asset: { ...item.asset }, x: pose.p[0], y: pose.p[1], z: pose.p[2], yaw: pose.yaw, pitch: 0, roll: 0, scale: item.scale || 1, name: item.name || 'Model' };
@@ -725,6 +776,13 @@ export class Editor {
     const pl = this.placing;
     if (!pl?.point) return;
     const rec = this.makeRecord(pl, pl.point, this.newUid());
+    if (pl.start) {
+      // one per area: placing it moves it
+      this.cancelPlacing();
+      this.setStart(rec, 'Placed');
+      this.toast(`Mario starts here now`, 'check');
+      return;
+    }
     const slot = this.engine.spawn(rec);
     this.records().push(rec);
     this.commit({ type: 'add', summary: rec.star ? `Added star “${rec.star.name}”` : `Placed ${rec.name}`, records: [rec] });

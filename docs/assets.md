@@ -51,6 +51,27 @@ grow the memory (`studio_assets_mem()` counts it). The area's light (World tab â
 direction, colour, ambient) shades imported models and blocks as well as the terrain; models set
 to *flat* light keep their colours.
 
+### Game objects in the model file
+
+A node of an FBX file (an empty, or any object) named like an object of the game, as the Objects
+library shows it, with underscores for spaces, becomes that object instead of geometry: `Koopa_Shell`,
+`koopa_shell.001`, `Goomba.B`, `Red_Coin.014` (any case; Blender's endings after the last dot are
+ignored, so `Mr._I.002` is Mr. I). It goes where the node is, facing the node's front (Blender's -Y:
+an empty with no rotation faces the game's +Z), turned and scaled with the placed model. A mesh with
+such a name is left out of the model.
+
+Each placement of the model gets them as objects of their own (`rec.fbx = { model, from: placement uid,
+node }`), with the bparams the library would give them. The model keeps the list (`meta.markers`, in
+its own coordinates); a placement remembers the version it has (`asset.markers`). When the file is
+saved again (live reload) or re-imported, the objects the file made before are removed and the file's
+current ones are placed: the file decides where they are, so moving one in the studio lasts until the
+next reload, which puts every one (and Mario's start) back where the file has it. Objects you add by hand are never touched. FBX only for now.
+
+A node named `Mario_Default_Start` is not an object: it moves the area's start (where Mario begins
+the area, `settings.spawn`) to its spot and facing. In build mode the start shows as the ferris wheel axle (half size),
+*Mario Default Start*, first in the Objects library (Popular): select it, drag or turn it, or place it
+again; there is one per area and it can't be deleted (editor.js `START_UID`).
+
 ### Blended materials (two textures by vertex alpha)
 
 Like Ocarina of Time's terrain: a material can carry **two textures** that blend by the **vertex

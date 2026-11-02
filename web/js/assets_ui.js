@@ -432,7 +432,7 @@ export class AssetsUI {
       const my = ++building;
       opts.classList.add('working');
       try {
-        const p = await buildPackage(scene, { scale: o.scale, rotate: o.rotate, zUp: o.zUp, origin: o.origin, texMax: o.texMax, texFormat: o.texFormat });
+        const p = await buildPackage(scene, { scale: o.scale, rotate: o.rotate, zUp: o.zUp, origin: o.origin, texMax: o.texMax, texFormat: o.texFormat, markerEntry: (n) => this.assets.markerEntry(n) });
         if (my !== building) return;
         const fresh = defaultMaterialMeta(p);
         mats = mats ? fresh.map((d, i) => keepMaterialMeta({ ...d, ...(mats[i] || {}) }, d.name)) : fresh;
@@ -450,7 +450,7 @@ export class AssetsUI {
       const s = pkg.bounds.max.map((v, i) => v - pkg.bounds.min[i]);
       const texs = pkg.materials.filter((m) => m.tex);
       back.querySelector('.as-pv-info').innerHTML = `<b>${Math.round(s[0])} × ${Math.round(s[1])} × ${Math.round(s[2])}</b> units · ${(s[1] / MARIO_H).toFixed(1)} Marios tall<br>
-        ${pkg.tris.toLocaleString()} triangles · ${pkg.materials.filter((m) => m.used).length} materials · ${texs.length} textures${texs.length ? ` (${[...new Set(texs.map((t) => `${t.tex.w}×${t.tex.h}`))].join(', ')})` : ''}`;
+        ${pkg.tris.toLocaleString()} triangles · ${pkg.materials.filter((m) => m.used).length} materials · ${texs.length} textures${texs.length ? ` (${[...new Set(texs.map((t) => `${t.tex.w}×${t.tex.h}`))].join(', ')})` : ''}${pkg.markers?.length ? `<br>${pkg.markers.length} game object${pkg.markers.length > 1 ? 's' : ''} (${esc([...new Set(pkg.markers.map((k) => this.assets.entryName(k.entry)))].slice(0, 6).join(', '))}): placed with the model` : ''}`;
       const warn = [...(scene.warnings || [])];
       if (pkg.tris > 20000) warn.push(`${pkg.tris.toLocaleString()} triangles is a lot for an N64-style level; it works, but consider decimating.`);
       const ext = Math.max(...pkg.bounds.max.map(Math.abs), ...pkg.bounds.min.map(Math.abs));
@@ -523,7 +523,7 @@ export class AssetsUI {
       const thumb = thumbnail(pkg, { materials: mats, lighting: o.lighting });
       const live = liveOf(files[0]);
       const meta = await this.assets.addModel({
-        bytes, pkg, name: o.name || scene.name, materials: mats, lighting: o.lighting, thumb, live,
+        bytes, pkg, name: o.name || scene.name, materials: mats, lighting: o.lighting, thumb, live, markers: pkg.markers,
         source: { files: files.map((f) => f.name).slice(0, 20), format: scene.format, scale: o.scale, rotate: o.rotate, zUp: o.zUp, origin: o.origin },
       });
       if (o.use === 'level') await this.assets.updateModel(meta.id, { defaults: { ...meta.defaults, mode: 'level' } });

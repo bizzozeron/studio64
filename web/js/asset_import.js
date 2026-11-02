@@ -570,6 +570,7 @@ async function importFBX(file, files) {
     return m;
   };
 
+  const nodeName = (model) => String(model.props[1] ?? '').split('\0')[0];
   const localMatrix = (model) => {
     const p = props70(model);
     const T = p['Lcl Translation'] || [0, 0, 0], R = p['Lcl Rotation'] || [0, 0, 0], S = p['Lcl Scaling'] || [1, 1, 1];
@@ -657,8 +658,10 @@ async function importFBX(file, files) {
         polyIndex++;
       }
       const wm = model ? worldMatrix(model) : IDENT();
+      const node = model ? nodeName(model) : null;
       for (const m of perMat.values()) {
         const mesh = {
+          node,
           positions: new Float32Array(m.positions), indices: new Uint32Array(m.indices), material: m.material,
           normals: nrm ? new Float32Array(m.normals) : null, uvs: uvE ? new Float32Array(m.uvs) : null, colors: colE ? new Float32Array(m.colors) : null,
         };
@@ -667,8 +670,15 @@ async function importFBX(file, files) {
       }
     }
   }
-  if (!meshes.length) throw new Error('no meshes found in this FBX file');
-  return { name: file.name.replace(/\.[^.]+$/, ''), meshes, materials, upAxis, unit: unitCm, warnings };
+  // every node by name (empties too): an object of the game named like one ("Koopa_Shell.001") becomes
+  // that object (asset_mesh.js buildPackage, assets.js). Where it is, and its front (Blender's -Y)
+  const nodes = [];
+  for (const model of (objects?.children || []).filter((o) => o.name === 'Model')) {
+    const m = worldMatrix(model);
+    nodes.push({ name: nodeName(model), type: String(model.props[2] || ''), pos: [m[12], m[13], m[14]], front: [-m[4], -m[5], -m[6]] });
+  }
+  if (!meshes.length && !nodes.length) throw new Error('no meshes found in this FBX file');
+  return { name: file.name.replace(/\.[^.]+$/, ''), meshes, materials, upAxis, unit: unitCm, warnings, nodes };
 }
 
 // ---------------------------------------------------------------------------

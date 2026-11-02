@@ -168,7 +168,8 @@ export class WorldFlow {
   }
 
   // Go to an area (the editor keeps its camera per area and comes back in build mode).
-  goArea(to, { intro = false, node } = {}) {
+  // reload: load the level again even when Mario is in it (Play from entry)
+  goArea(to, { intro = false, node, reload = false } = {}) {
     const e = this.engine;
     if (!e.ready) return;
     const ed = this.editor;
@@ -178,6 +179,7 @@ export class WorldFlow {
     let force = 0;
     if (to.custom) { force = e.level === STUDIO_LEVEL && e.customLevel !== to.custom ? 1 : 0; e.pendingCustom = to.custom; }
     if (level === e.level && (to.area || 1) === e.area && !force) force = 1;
+    if (reload) force = 1;
     this.M._studio_warp_fast(level, to.area || 1, node ?? (level === 6 ? 0 : 10), 0, force, intro ? 1 : 2);
   }
 

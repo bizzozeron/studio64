@@ -32,6 +32,7 @@ const WORKSPACES = [
   { id: 'world', sel: '#world-btn', label: 'World', icon: 'globe', about: 'Areas, warps and doors' },
   { id: 'assets', sel: '#assets-btn', label: 'Assets', icon: 'cube', about: '3D models, textures, materials, sky, Mario', open: (s) => s.assetsUI?.open(), close: (s) => s.assetsUI?.close(), isOpen: () => !!$('#as-drawer:not([hidden])') },
   { id: 'sound', sel: '#sound-btn', label: 'Sound', icon: 'music', keys: 'M', about: 'Music and sound effects', open: (s) => s.soundUI?.open(), close: (s) => s.soundUI?.close(), isOpen: () => !!$('#sound-studio:not([hidden])') },
+  { id: 'input', sel: '#input-btn', label: 'Input', icon: 'gamepad', about: 'Keys and controller buttons for the game', open: (s) => s.inputUI?.open(), close: (s) => s.inputUI?.close(), isOpen: () => !!$('#input-panel:not([hidden])') },
   { id: 'game', sel: '#game-btn', label: 'Game', icon: 'gamepad', keys: 'P', about: 'Game rules: physics, moves, lives, HUD', isOpen: () => !!$('.om-modal .gr'), close: () => $('.om-modal .gr [data-a=close]')?.click() },
 ];
 const BOTTOM = [

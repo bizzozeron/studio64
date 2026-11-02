@@ -55,14 +55,20 @@ export async function buildPackage(scene, opts = {}) {
     return p;
   };
 
+  // nodes named like an object of the game (opts.markerEntry(name) -> its catalog entry, or null) are
+  // that object, not geometry: pkg.markers, placed with the model (assets.js syncMarkers)
+  const marked = new Map();
+  if (opts.markerEntry) for (const n of scene.nodes || []) { const e = opts.markerEntry(n.name); if (e) marked.set(n.name, { node: n, entry: e }); }
+  const meshes = scene.meshes.filter((m) => !(m.node && marked.has(m.node)));
   let tris = 0;
-  for (const m of scene.meshes) tris += m.indices.length / 3;
+  for (const m of meshes) tris += m.indices.length / 3;
+  if (!tris) throw new Error(marked.size ? 'the model has no geometry besides its game objects' : 'the model has no triangles');
   if (tris > MAX_TRIS) throw new Error(`the model has ${tris} triangles; the limit is ${MAX_TRIS} (decimate it in Blender first)`);
 
   const pos = new Float32Array(tris * 9), uv = new Float32Array(tris * 6), col = new Uint8Array(tris * 12), nrm = new Int8Array(tris * 9);
   const mat = new Uint16Array(tris);
   let t = 0;
-  for (const m of scene.meshes) {
+  for (const m of meshes) {
     const P = m.positions, U = m.uvs, C = m.colors, N = m.normals, I = m.indices;
     const mc = scene.materials[m.material]?.color || [1, 1, 1, 1];
     for (let k = 0; k < I.length; k += 3, t++) {
@@ -92,8 +98,9 @@ export async function buildPackage(scene, opts = {}) {
   // origin
   const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
   for (let i = 0; i < pos.length; i += 3) for (let a = 0; a < 3; a++) { if (pos[i + a] < min[a]) min[a] = pos[i + a]; if (pos[i + a] > max[a]) max[a] = pos[i + a]; }
+  let off = [0, 0, 0];
   if (origin !== 'file') {
-    const off = [(min[0] + max[0]) / 2, origin === 'bottom' ? min[1] : (min[1] + max[1]) / 2, (min[2] + max[2]) / 2];
+    off = [(min[0] + max[0]) / 2, origin === 'bottom' ? min[1] : (min[1] + max[1]) / 2, (min[2] + max[2]) / 2];
     for (let i = 0; i < pos.length; i += 3) for (let a = 0; a < 3; a++) pos[i + a] -= off[a];
     for (let a = 0; a < 3; a++) { min[a] -= off[a]; max[a] -= off[a]; }
   }
@@ -122,7 +129,13 @@ export async function buildPackage(scene, opts = {}) {
     }
     materials.push(out);
   }
-  return { version: 1, name: scene.name, tris, pos, uv, col, nrm, mat, materials, bounds: { min, max }, format: scene.format, texFormat, texMax };
+  // the game objects: in the model's own coordinates (as its vertices), yaw from their front
+  const markers = [...marked.values()].map(({ node, entry }) => {
+    const p = turn(node.pos.map((v) => v * scale)), f = turn(node.front);
+    const yaw = Math.hypot(f[0], f[2]) > 1e-6 ? Math.round((Math.atan2(f[0], f[2]) / (2 * Math.PI)) * 65536) & 0xffff : 0;
+    return { node: node.name, entry: entry.id, x: Math.round(p[0] - off[0]), y: Math.round(p[1] - off[1]), z: Math.round(p[2] - off[2]), yaw };
+  }).sort((a, b) => a.node.localeCompare(b.node));
+  return { version: 1, name: scene.name, tris, pos, uv, col, nrm, mat, materials, bounds: { min, max }, format: scene.format, texFormat, texMax, markers };
 }
 
 // A material drawn blended: two images, and the blend not turned off in its settings.

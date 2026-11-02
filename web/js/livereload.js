@@ -367,7 +367,7 @@ export class LiveReload {
     // file puts it however its size changes (no re-centering)
     const pkg = await buildPackage(scene, {
       scale: src.scale ?? 1, rotate: src.rotate || [0, 0, 0], zUp: src.zUp, origin: 'file',
-      texMax: meta.texMax || 64, texFormat: meta.texFormat || 'rgba16',
+      texMax: meta.texMax || 64, texFormat: meta.texFormat || 'rgba16', markerEntry: (n) => A.markerEntry(n),
     });
     // per-material game settings (surface, transparency, ...) stay, matched by material name
     const fresh = defaultMaterialMeta(pkg);
@@ -385,7 +385,7 @@ export class LiveReload {
     const mario = this.marioNow();
     const placedHere = (A.getPatch()?.areas?.[A.key()]?.objects || []).some((r) => r.asset?.model === meta.id);
     await A.updateModel(meta.id, {
-      file, tris: pkg.tris, bounds: pkg.bounds, materials, thumb, at: Date.now(),
+      file, tris: pkg.tris, bounds: pkg.bounds, materials, thumb, at: Date.now(), markers: pkg.markers || [],
       live: { path: t.main, hash: main.liveHash },
       source: { ...src, origin: 'file', files: files.map((f) => f.name).slice(0, 40), format: scene.format },
     }, summary);

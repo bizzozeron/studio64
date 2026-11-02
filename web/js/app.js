@@ -25,6 +25,7 @@ import { installPathsRuntime, installPathsEditor } from './paths/index.js';
 import { CHARACTERS } from './story/schema.js';
 import { dropShotgunRules } from './objects/game_rules.js';
 import './title/index.js'; // the launch screen: title screen editor, played before Play from start
+import { InputUI } from './input_ui.js';
 
 const $ = (sel) => document.querySelector(sel);
 const el = (tag, cls, html) => { const e = document.createElement(tag); if (cls) e.className = cls; if (html !== undefined) e.innerHTML = html; return e; };
@@ -117,6 +118,8 @@ function bootEngine(level) {
     commit: (op) => { send({ type: 'edit', op }); flashSaved(); }, getPatch: () => engine.patch,
   });
   state.assets.load();
+  // an FBX node named Mario_Default_Start moves the area's start (assets.js syncMarkers)
+  state.assets.setStart = (spawn, summary) => state.world.setSettings({ spawn }, summary);
   // live reload of the live assets folder (livereload.js, server/routes/livereload.js)
   state.liveReload = new LiveReload({ assets: state.assets, send, toast });
   // roads, fences and painted plants (paths/): before the first area loads
@@ -1144,6 +1147,8 @@ function setupEditor() {
   state.testing = new TestTools({ state, send, toast, hub: state.hub }); // play-testing and debug tools (testing.js)
   state.soundUI = new SoundUI({ engine: state.engine, world: state.world, editor, send, toast, getAudio: () => state.audio });
   $('#sound-btn').onclick = () => state.soundUI.open();
+  // the game's controls: keys and controller buttons (input_ui.js, engine studio/input.c)
+  state.inputUI = new InputUI({ engine: state.engine, toast, hotkeys: () => state.testing?.hotkeys });
   state.assetsUI = new AssetsUI({ assets: state.assets, engine: state.engine, editor, editorUI: state.editorUI, levelsUI: state.levelsUI, toast, chat: (text) => submit(text), live: state.liveReload });
   attachStoryUI(state, { send, toast }); // the Story panel and build mode's Logic tab (story/)
   installObjectsEditor(state.objects, { editor, editorUI: state.editorUI, catalog: state.catalog }); // path tool, scene panel, My objects, Game panel

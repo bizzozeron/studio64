@@ -3,6 +3,7 @@
 // states, a speedrun timer, the save file (stars, keys, doors), a level validator and
 // "Play from here". See docs/testing-tools.md.
 import { registerRpc } from './studio.js';
+import { defaultHotkeyOfKey } from './input_ui.js';
 import { Validator } from './validator.js';
 import { Terrain } from './terrain.js';
 
@@ -169,6 +170,11 @@ export class TestTools {
       b.title = 'Play from the spot the camera looks at (P: the spot under the mouse)';
       b.onclick = () => this.playFromHere();
       bar.appendChild(b);
+      // and from the level's entry, the level loaded again (Backspace while playing)
+      const r = el('button', 'bar-btn tt-playentry', `${ic('play')}<span>Play from entry</span>`);
+      r.title = 'Load this level again and play from its entry: objects, coins and enemies back as they were (Backspace while playing)';
+      r.onclick = () => this.playFromEntry();
+      bar.appendChild(r);
     }
   }
 
@@ -183,20 +189,29 @@ export class TestTools {
     // shortcuts work while playing and building, not while typing
     window.addEventListener('keydown', (ev) => {
       if (/INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName || '') || !$('#modal-back').hidden || document.body.classList.contains('home-open')) return;
-      const k = ev.key;
-      const act = {
-        F2: () => this.toggleOverlay(),
-        F3: () => this.toggle(),
-        F4: () => this.resetTimer(true),
-        F6: () => this.saveState(0),
-        F7: () => this.loadState(0),
-        F8: () => this.setFrozen(!this.frozen),
-        F9: () => this.step(),
-        F10: () => this.cycleSlow(),
-      }[k];
-      if (act) { ev.preventDefault(); ev.stopPropagation(); act(); return; }
+      // the studio's hotkeys (rebindable in the Input workspace, input_ui.js; F-keys and Backspace by default)
+      const id = (window.studio64?.inputUI?.hotkeyOfKey || defaultHotkeyOfKey)(ev.code);
+      if (id && this.hotkeys[id] && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
+        // (Backspace / Delete delete in build mode: Play from entry is the build bar's button there)
+        const editorKey = this.editor?.active && (ev.code === 'Backspace' || ev.code === 'Delete');
+        if (!editorKey) {
+          ev.preventDefault(); ev.stopPropagation();
+          if (!ev.repeat || id === 'step') this.hotkeys[id]();
+          return;
+        }
+      }
       if (ev.code === 'KeyP' && this.editor?.active && !ev.ctrlKey && !ev.metaKey && !ev.altKey) { ev.preventDefault(); this.playFromHere(true); }
     }, true);
+  }
+
+  // the studio's hotkeys by id (input_ui.js HOTKEYS): keys and controller buttons call these
+  get hotkeys() {
+    return {
+      entry: () => this.playFromEntry(), save: () => this.saveState(0), load: () => this.loadState(0),
+      storeloc: () => this.storeLocation(), restoreloc: () => this.restoreLocation(),
+      debug: () => this.toggleOverlay(), panel: () => this.toggle(), timer: () => this.resetTimer(true),
+      pause: () => this.setFrozen(!this.frozen), step: () => this.step(), slow: () => this.cycleSlow(),
+    };
   }
 
   toggle(on = this.panel.hidden) {
@@ -264,6 +279,11 @@ export class TestTools {
       </div>
       <div class="tt-sec"><div class="tt-sec-title">Play from here</div>
         <div class="tt-row"><button class="btn sm" id="tt-here">${ic('run')}Play from the camera</button><span class="tt-note">In build mode: <span class="tt-key">P</span> plays from the spot under the mouse.</span></div>
+        <div class="tt-row"><button class="btn sm" id="tt-entry">${ic('play')}Play from entry</button><span class="tt-note">The level loaded again, from its entry.</span></div>
+      </div>
+      <div class="tt-sec"><div class="tt-sec-title">Stored location</div>
+        <div class="tt-row"><button class="btn sm" id="tt-locstore">${ic('target')}Store location</button><button class="btn sm" id="tt-locrestore" ${this.storedLoc() ? '' : 'disabled'}>${ic('flag')}Restore location</button></div>
+        <div class="tt-row"><span class="tt-note">${this.storedLoc() ? esc(`Stored: ${this.storedLoc().label}`) : 'Nothing stored yet.'} Restoring loads the level again (coins, enemies, everything back) with Mario where you stored him: not a save state. Hotkeys in the Input workspace.</span></div>
       </div>`;
     body.querySelectorAll('[data-opt]').forEach((b) => { b.onclick = () => { o[b.dataset.opt] = !o[b.dataset.opt]; this.applyOpts(); this.render(); }; });
     body.querySelector('#tt-freeze').onclick = () => this.setFrozen(!this.frozen);
@@ -271,6 +291,9 @@ export class TestTools {
     body.querySelectorAll('[data-slow]').forEach((b) => { b.onclick = () => this.setSlow(Number(b.dataset.slow)); });
     body.querySelector('#tt-timer-reset').onclick = () => this.resetTimer(true);
     body.querySelector('#tt-here').onclick = () => this.playFromHere();
+    body.querySelector('#tt-entry').onclick = () => this.playFromEntry();
+    body.querySelector('#tt-locstore').onclick = () => this.storeLocation();
+    body.querySelector('#tt-locrestore').onclick = () => this.restoreLocation();
     this.renderSlots();
   }
 
@@ -293,6 +316,7 @@ export class TestTools {
   // ---- debug overlay ------------------------------------------------------------------------
 
   onFrame() {
+    if (this.pendingRestore) this.finishRestore();
     this.fps.n++;
     const now = performance.now();
     if (now - this.fps.t >= 1000) { this.fps.game = (this.fps.n * 1000) / (now - this.fps.t); this.fps.n = 0; this.fps.t = now; }
@@ -487,6 +511,7 @@ export class TestTools {
   }
 
   onArea(lvl) {
+    if (this.pendingRestore) this.pendingRestore.areaSeen = true; // (the reload happened: Restore location)
     if (lvl !== this.lastLevel || this.engine.areaKey() !== this.lastKey) {
       if (lvl !== this.lastLevel) this.resetTimer(false);
       this.lastLevel = lvl;
@@ -648,6 +673,89 @@ export class TestTools {
     $('#canvas').focus();
     this.toast('Playing from here', 'play');
     return { x: Math.round(p[0]), y: Math.round(ground), z: Math.round(p[2]) };
+  }
+
+  // The level loaded again from its entry (area 1, where its painting or warp brings Mario: your start
+  // in your own levels and in levels whose start you moved): everything in it back as it was (coins,
+  // enemies, boxes; Mario's coins with them), the save file and the stars kept.
+  playFromEntry() {
+    const e = this.engine;
+    if (!e?.ready) return;
+    const flow = (window.studio64 || {}).worldFlow;
+    if (this.editor?.active) this.editor.exit();
+    if (flow?.goArea) flow.goArea({ ...flow.here(), area: 1 }, { intro: false, reload: true });
+    else e.warpFast(e.level, 0, null, false);
+    $('#canvas')?.focus();
+    this.toast('Playing from the entry', 'play');
+  }
+
+  // ---- stored location --------------------------------------------------------------------------
+  // Store: where Mario is (level, area, spot, facing). Restore: that level loaded again (everything in
+  // it back as it was, like Play from entry) and Mario put there. Kept per project in this browser.
+
+  locKey() { return `studio64.loc.${this.state.projectId}`; }
+  storedLoc() { return this._loc !== undefined ? this._loc : (this._loc = store.get(this.locKey(), null)); }
+
+  storeLocation() {
+    const e = this.engine;
+    const flow = (window.studio64 || {}).worldFlow;
+    let m = null;
+    try { m = e.state().mario; } catch { /* loading */ }
+    if (!m || !flow) { this.toast('Mario is not in a level', 'x'); return; }
+    const here = flow.here();
+    // the camera too: where it is and looks, from Mario (Restore puts it back the same way round)
+    let cam = null;
+    try {
+      const c = e.camOut();
+      if (c && !this.editor?.active) cam = { pos: [0, 1, 2].map((i) => Math.round(c.pos[i] - [m.x, m.y, m.z][i])), focus: [0, 1, 2].map((i) => Math.round(c.focus[i] - [m.x, m.y, m.z][i])) };
+    } catch { /* no camera */ }
+    // and (newer engine builds) Mario's whole state and the camera's, as a save state would: kept in
+    // the engine until the page reloads (snap: this page's id)
+    const snap = this.M?._studio_snap_store?.() ? (this.pageId ||= Math.random().toString(36).slice(2)) : null;
+    const loc = { here, key: e.areaKey(), cam, snap, x: Math.round(m.x), y: Math.round(m.y), z: Math.round(m.z), yaw: m.yaw & 0xffff, label: `${flow.areaName ? flow.areaName(here) : e.areaKey()} (${Math.round(m.x)}, ${Math.round(m.y)}, ${Math.round(m.z)})` };
+    this._loc = loc;
+    store.set(this.locKey(), loc);
+    this.toast('Location stored', 'check');
+    if (!this.panel.hidden) this.render();
+  }
+
+  restoreLocation() {
+    const loc = this.storedLoc();
+    const e = this.engine;
+    const flow = (window.studio64 || {}).worldFlow;
+    if (!loc) { this.toast('No location stored yet', 'x'); return; }
+    if (!e?.ready || !flow?.goArea) return;
+    if (this.editor?.active) this.editor.exit();
+    this.pendingRestore = { ...loc, since: performance.now(), loaded: false, frame: 0 };
+    flow.goArea({ ...loc.here }, { intro: false, reload: true });
+    $('#canvas')?.focus();
+  }
+
+  // after the reload: once the area is in and Mario stands in it, a few frames on, put him there
+  finishRestore() {
+    const r = this.pendingRestore;
+    const e = this.engine;
+    if (performance.now() - r.since > 8000) { this.pendingRestore = null; this.toast('Could not restore the location', 'x'); return; }
+    let m = null;
+    try { m = e.state().mario; } catch { /* loading */ }
+    if (!r.loaded) {
+      if (r.areaSeen && e.areaKey() === r.key && m && !e.inIntro) { r.loaded = true; r.frame = 0; }
+      return;
+    }
+    if (++r.frame < 2) return;
+    this.pendingRestore = null;
+    // Mario as he was (action, speed, animation, coins, health) and the camera as it was
+    if (r.snap && r.snap === this.pageId && this.M?._studio_snap_restore) {
+      const how = this.M._studio_snap_restore(1);
+      if (how) { this.toast(how === 2 ? 'Restored (Mario let go of what he was holding or riding)' : 'Restored', 'check'); return; }
+    }
+    e.teleport(r.x, r.y, r.z, r.yaw);
+    // and the camera, looking the way it did (engine studio/camplace.c; older engine builds: no camera)
+    if (r.cam && this.M?._studio_camera_place) {
+      const at = [r.x, r.y, r.z];
+      this.M._studio_camera_place(...r.cam.pos.map((v, i) => at[i] + v), ...r.cam.focus.map((v, i) => at[i] + v));
+    }
+    this.toast(r.cam && !this.M?._studio_camera_place ? 'Location restored (the camera needs Rebuild Engine.bat)' : 'Location restored (level reloaded)', 'check');
   }
 
   // ---- save file ------------------------------------------------------------------------------

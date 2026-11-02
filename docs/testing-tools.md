@@ -18,6 +18,7 @@ All of it works from the UI alone, without AI; the Claude tools listed at the en
 | `F9` | one frame forward (pauses first) |
 | `F10` | slow motion: 1×, 1/2, 1/4, 1/8 |
 | `P` (build mode) | play from the spot under the mouse |
+| `Backspace` (playing) | play from entry: the level loaded again from its entry (also a button in the build bar) |
 
 They work while playing and building, never while typing in a field.
 
@@ -144,3 +145,40 @@ Tools in `server/tools/projects.js`: `validate_level` (the same check, with posi
 
 Test: `tests/suite/testing_tools.test.mjs` (overlay, pause, frame advance, slow motion, save
 states with F7, save file, validator with planted problems, Fix, Show, play from here, `P`).
+
+## Play from entry
+
+**Play from entry** (build bar, next to *Play from here*; `Backspace` while playing) loads the level
+Mario is in again and starts him at its entry: area 1, where its painting or warp brings him (your
+start, the *Mario Default Start*, in your own levels and in original levels whose start you moved).
+Everything in the level comes back as it was (coins, enemies, boxes, Mario's coin count); the save
+file and stars stay. `worldflow.goArea(to, { reload: true })`.
+
+## Input
+
+The **Input** workspace (left rail) sets which keyboard keys and controller buttons play each N64
+button in the studio's game: three per button, click a slot and press a key or a controller button.
+The controller's left stick always moves Mario and its right stick works the C buttons. Kept in the
+browser (localStorage `studio64.input.v1`) and given to the engine at every start
+(`engine/src/studio/input.c`: `studio_input_get/set/apply` over sm64ex's `configKey*`). Esc, Tab,
+Esc and Tab stay the studio's. Exported ROMs are not affected.
+
+Below the game's buttons are the **studio hotkeys** (play from entry, save / load state, debug view,
+play-test panel, timer, pause, frame advance, slow motion): two bindings each, a keyboard key or a
+controller button (none on the controller by default; `localStorage studio64.hotkeys.v1`). A key or
+button does one thing: giving it to a hotkey takes it off the game's buttons, and the other way round.
+Controller hotkeys are read every frame (`InputUI.pollPads`), keyboard ones by testing.js. Needs an engine rebuilt
+with input.c (`Rebuild Engine.bat`); before that the panel says so.
+
+## Stored location
+
+**Store location** / **Restore location** (play-test panel, F3; hotkeys in the Input workspace, none by
+default) sit between a save state and Play from entry. Store remembers Mario as he is: level, area,
+spot, and (engine builds with `studio_snap_*`, `engine/src/studio/camplace.c`) his whole state, his
+action and its timers, speed, facing, animation frame, health, coins, cap, plus the whole camera.
+Restore loads that level again (coins, enemies, boxes back; models and textures as they are now,
+changes made while playing included), and two frames after the area is in, puts Mario's state and
+the camera back. What he held, rode or hung on was the old level's: then he comes back standing,
+falling or swimming. The full state lives in the engine until the page reloads; after that (or on
+older engine builds) Restore puts Mario at the stored spot and facing and the camera where it was.
+Save / Load state (F6 / F7) instead bring back the whole game, level included.
