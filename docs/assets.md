@@ -98,6 +98,11 @@ slot), as studio stars named "Star N" (their names show in the ROM's act list). 
 (underscores as spaces, Blender's ending dropped): `Bobby's_Big_Whatever*Star1`,
 `Luigi's_Holiday*Star.001`, `Star.001*Iggy_Big_Mart`, `Title*Star` (no number: the default one).
 
+An object (mesh) named with `*NoCollide`, `*NoClip` or `*NoCollision` (any case: `Arch*NoCollide`,
+`Grass_Tuft.003*noclip`) has no collision at all: its materials come in as copies of their own,
+"Stone (no collision)" with the surface *No collision*, so the same material elsewhere keeps its
+collision. A live reload keeps them collision-free.
+
 A node named `Mario_Default_Start` is not an object: it moves the area's start (where Mario begins
 the area, `settings.spawn`) to its spot and facing. In build mode the start shows as the ferris wheel axle (half size),
 *Mario Default Start*, first in the Objects library (Popular): select it, drag or turn it, or place it

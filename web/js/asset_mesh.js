@@ -111,7 +111,7 @@ export async function buildPackage(scene, opts = {}) {
   const materials = [];
   for (const [i, m] of scene.materials.entries()) {
     const used = mat.includes(i);
-    const out = { name: m.name, color: m.color, alphaMode: m.alphaMode, doubleSided: m.doubleSided, doubleFromName: !!m.doubleFromName, vcMode: m.vcMode || null, wrapS: m.wrapS, wrapT: m.wrapT, unlit: !!m.unlit, used };
+    const out = { name: m.name, color: m.color, alphaMode: m.alphaMode, doubleSided: m.doubleSided, doubleFromName: !!m.doubleFromName, noCollide: !!m.noCollide, vcMode: m.vcMode || null, wrapS: m.wrapS, wrapT: m.wrapT, unlit: !!m.unlit, used };
     if (m.image && used) {
       const w = pow2(m.image.width, texMax), h = pow2(m.image.height, texMax);
       const rgba = rasterize(m.image, w, h, { smooth: smoothTextures });
@@ -150,7 +150,7 @@ export const isBlended = (m, s = {}) => !!(m?.tex && m?.tex2 && !blendOff(s));
 export function defaultMaterialMeta(pkg) {
   return pkg.materials.map((m) => {
     const alpha = m.tex?.alpha === 'blend' || m.alphaMode === 'BLEND' || m.color[3] < 0.99 ? 'blend' : (m.tex?.alpha === 'cutout' || m.alphaMode === 'MASK') ? 'cutout' : 'opaque';
-    let surface = guessSurface(m.name);
+    let surface = m.noCollide ? 'none' : guessSurface(m.name);
     if (alpha === 'cutout' && surface === 'normal' && /leaf|tree|plant|grass|bush/i.test(m.name)) surface = 'none';
     // (blend: only stored once someone turns it off, blendUser; blended materials blend by default)
     return { name: m.name, surface, alpha, double: !!m.doubleSided || alpha === 'cutout', wrapS: m.wrapS || 'repeat', wrapT: m.wrapT || 'repeat', unlit: !!m.unlit, ...(m.vcMode && m.vcMode !== 'multiply' ? { vc: m.vcMode } : {}) };

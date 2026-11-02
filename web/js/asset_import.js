@@ -591,6 +591,10 @@ async function importFBX(file, files) {
       else if (fname) warnings.push(`Texture ${baseName(fname)} was not dropped with the model.`);
       if (!m.image && ((content instanceof Uint8Array && content.length > 16) || idx.get(baseName(fname)))) warnings.push(`Texture ${baseName(fname)} (material ${m.name}) could not be read: save it as PNG, JPG, TGA or PSD (with Maximize compatibility).`);
       m.imageName = baseName(fname);
+      // Blender writes the Base Color's own value (0.8 grey, or whatever it was before a texture went
+      // into it) even when a texture drives it, and then ignores it: so do we (it multiplied the
+      // texture and the vertex colours: duller, or tinted)
+      if (m.image) m.color = [1, 1, 1, m.color[3]];
     }
     // a second image for blended materials: the Emission Color texture (Blender: Image Texture into
     // the Principled BSDF's Emission Color; its strength may be 0)
@@ -674,14 +678,22 @@ async function importFBX(file, files) {
     const models = (parents.get(geo.props[0]) || []).map((x) => byId.get(x.to)).filter((o) => o?.name === 'Model');
     for (const model of models.length ? models : [null]) {
       const mats = model ? kids(model.props[0], 'Material') : [];
+      // an object named "Wall*NoCollide" (or *NoClip, *NoCollision): none of it has collision. Its
+      // materials become copies of their own ("Stone (no collision)", surface: none)
+      const noCollide = !!model && nodeName(model).split('*').slice(1).some((t) => /^no(collide|clip|collision)$/i.test(t.trim().replace(/[\s_-]+/g, '').replace(/\.\d+$/, '')));
       const slot = [];
+      const add = (key, make) => {
+        if (!matIndex.has(key)) { matIndex.set(key, materials.length); materials.push(make()); }
+        return matIndex.get(key);
+      };
       for (const mo of mats) {
-        if (!matIndex.has(mo.props[0])) { matIndex.set(mo.props[0], materials.length); materials.push(await materialOf(mo)); }
-        slot.push(matIndex.get(mo.props[0]));
+        const base = add(mo.props[0], () => null);
+        if (materials[base] === null) materials[base] = await materialOf(mo);
+        slot.push(noCollide ? add(`${mo.props[0]}#nc`, () => ({ ...materials[base], name: `${materials[base].name} (no collision)`, noCollide: true })) : base);
       }
       if (!slot.length) {
-        if (!matIndex.has('default')) { matIndex.set('default', materials.length); materials.push(newMaterial('default')); }
-        slot.push(matIndex.get('default'));
+        const d = add('default', () => newMaterial('default'));
+        slot.push(noCollide ? add('default#nc', () => ({ ...materials[d], name: 'default (no collision)', noCollide: true })) : d);
       }
       const perMat = new Map();
       const out = (mi) => {

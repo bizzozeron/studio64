@@ -337,8 +337,12 @@ export class WorldUI {
         <input type="number" class="wd-num" data-k="deathY" value="${Number.isFinite(env.deathY) ? env.deathY : -1000}" step="100" title="Mario loses a life below this height (typing a height turns it on)" style="${Number.isFinite(env.deathY) ? '' : 'opacity:.6'}"></div>
       <div class="wd-row wd-fall"><span>leads to</span><b>${env.fallTo ? esc(this.destName(env.fallTo)) : 'losing a life'}</b>
         <button class="btn sm" data-a="fallto">${env.fallTo ? 'Change' : 'Another area…'}</button>${env.fallTo ? '<button class="btn icon ghost sm" data-a="fallclear" title="Back to losing a life">' + icon('x', 'sm') + '</button>' : ''}</div>`;
+    // (the area's environment as it is now: edits made since this box was drawn included; the env this
+    // box was drawn with is stale after the first change, and a preview built on it undid the others)
+    const cur = () => this.world.settings().env || {};
     const set = (k, v, summary) => {
       const [a, b] = k.split('.');
+      const env = cur();
       if (b) this.flow.setEnv({ [a]: { ...(env[a] || {}), [b]: v } }, summary);
       else this.flow.setEnv({ [a]: v }, summary);
     };
@@ -352,6 +356,7 @@ export class WorldUI {
           if (out) out.textContent = k === 'light.ambient' ? `${Math.round(v * 100)}%` : k.includes('yaw') || k.includes('pitch') || k.includes('axis') ? `${v}°` : v;
           // live preview without saving
           const [a, b] = k.split('.');
+          const env = cur();
           const tmp = { ...env, [a]: { ...(env[a] || {}), [b]: v } };
           this.flow.applyEnv(tmp, custom);
           if (a === 'light' && custom && this.world.terrain) this.engine.terrainBuild(1, 0, 0, -1, -1, false);
@@ -363,13 +368,13 @@ export class WorldUI {
           else set(k, inp.checked, inp.checked ? 'Turned on fog' : 'Turned off fog');
         };
       } else if (inp.type === 'color') {
-        inp.oninput = () => { const [a, b] = k.split('.'); this.flow.applyEnv({ ...env, [a]: { ...(env[a] || {}), [b]: inp.value } }, custom); if (a === 'light' && custom && this.world.terrain) this.engine.terrainBuild(1, 0, 0, -1, -1, false); };
+        inp.oninput = () => { const [a, b] = k.split('.'); const env = cur(); this.flow.applyEnv({ ...env, [a]: { ...(env[a] || {}), [b]: inp.value } }, custom); if (a === 'light' && custom && this.world.terrain) this.engine.terrainBuild(1, 0, 0, -1, -1, false); };
         inp.onchange = () => set(k, inp.value, 'Changed a colour');
       } else if (inp.tagName === 'SELECT') {
         inp.onchange = () => {
           if (k === 'camera.mode') {
             const mode = inp.value;
-            const c = { ...(env.camera || {}), mode };
+            const c = { ...(cur().camera || {}), mode };
             if (mode === 'fixed' && c.x === undefined) { const cp = this.engine.camOut().pos; Object.assign(c, { x: Math.round(cp[0]), y: Math.round(cp[1]), z: Math.round(cp[2]) }); }
             this.flow.setEnv({ camera: mode === 'default' ? null : c }, 'Changed the camera');
           } else set(k, inp.value || null, k === 'weather' ? `Weather: ${WEATHER_LABELS[inp.value]}` : 'Changed the ambient sound');
@@ -377,9 +382,9 @@ export class WorldUI {
       } else if (k === 'deathY') {
         inp.onchange = () => {
           // an empty field is not height 0 (that would kill Mario on most grounds)
-          if (inp.value.trim() === '' || !Number.isFinite(Number(inp.value))) { inp.value = env.deathY ?? inp.defaultValue; return; }
+          if (inp.value.trim() === '' || !Number.isFinite(Number(inp.value))) { inp.value = cur().deathY ?? inp.defaultValue; return; }
           // (typing a height also turns it on: the box is no longer greyed out and locked while off)
-          const was = Number.isFinite(env.deathY);
+          const was = Number.isFinite(cur().deathY);
           this.flow.setEnv({ deathY: Number(inp.value) }, was ? 'Changed the death height' : 'Set a death height');
           const cb = box.querySelector('[data-k="death.on"]');
           if (cb) cb.checked = true;
@@ -389,7 +394,7 @@ export class WorldUI {
     });
     box.querySelector('[data-a=camfix]')?.addEventListener('click', () => {
       const cp = this.engine.camOut().pos;
-      this.flow.setEnv({ camera: { ...(env.camera || {}), mode: 'fixed', x: Math.round(cp[0]), y: Math.round(cp[1]), z: Math.round(cp[2]) } }, 'Placed the fixed camera');
+      this.flow.setEnv({ camera: { ...(cur().camera || {}), mode: 'fixed', x: Math.round(cp[0]), y: Math.round(cp[1]), z: Math.round(cp[2]) } }, 'Placed the fixed camera');
       this.toast('The camera will watch from here', 'check');
     });
     box.querySelector('[data-a=fallto]').onclick = () => this.chooseDestination({ title: 'Falling off leads to…', onPick: (to) => this.flow.setEnv({ fallTo: to }, `Falling leads to ${this.destName(to)}`), allowHub: true });
